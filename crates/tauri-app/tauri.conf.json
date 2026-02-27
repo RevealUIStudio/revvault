@@ -10,7 +10,6 @@
     "beforeBuildCommand": "pnpm --dir ../../frontend build"
   },
   "app": {
-    "title": "Revault",
     "windows": [
       {
         "title": "Revault",

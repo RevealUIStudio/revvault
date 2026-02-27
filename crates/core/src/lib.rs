@@ -1,3 +1,6 @@
+// TODO: remove once rustc 1.93.1 ICE in early_lint_checks is fixed
+#![allow(unused)]
+
 pub mod config;
 pub mod crypto;
 pub mod error;

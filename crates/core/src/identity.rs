@@ -57,6 +57,7 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secrecy::ExposeSecret;
 
     #[test]
     fn load_identity_from_file() {
@@ -72,7 +73,7 @@ mod tests {
             format!(
                 "# created: 2024-01-01\n# public key: {}\n{}\n",
                 identity.to_public(),
-                secret_key
+                secret_key.expose_secret()
             ),
         )
         .unwrap();

@@ -9,7 +9,7 @@ use crate::identity::Identity;
 /// Encrypt plaintext bytes to one or more age recipients.
 pub fn encrypt(plaintext: &[u8], recipients: &[x25519::Recipient]) -> Result<Vec<u8>> {
     let encryptor = age::Encryptor::with_recipients(
-        recipients.iter().map(|r| Box::new(r.clone()) as _).collect(),
+        recipients.iter().map(|r| r as &dyn age::Recipient),
     )
     .map_err(|e| RevaultError::EncryptionFailed(e.to_string()))?;
 
@@ -29,16 +29,14 @@ pub fn encrypt(plaintext: &[u8], recipients: &[x25519::Recipient]) -> Result<Vec
 
 /// Decrypt an age-encrypted blob using the provided identity.
 pub fn decrypt(ciphertext: &[u8], identity: &Identity) -> Result<SecretString> {
-    let decryptor = match age::Decryptor::new(ciphertext)
-        .map_err(|e| RevaultError::DecryptionFailed(e.to_string()))?
-    {
-        age::Decryptor::Recipients(d) => d,
-        _ => {
-            return Err(RevaultError::DecryptionFailed(
-                "passphrase-encrypted files not supported".into(),
-            ))
-        }
-    };
+    let decryptor = age::Decryptor::new(ciphertext)
+        .map_err(|e| RevaultError::DecryptionFailed(e.to_string()))?;
+
+    if decryptor.is_scrypt() {
+        return Err(RevaultError::DecryptionFailed(
+            "passphrase-encrypted files not supported".into(),
+        ));
+    }
 
     let mut decrypted = vec![];
     let mut reader = decryptor
@@ -48,10 +46,10 @@ pub fn decrypt(ciphertext: &[u8], identity: &Identity) -> Result<SecretString> {
                 .iter()
                 .map(|i| i as &dyn age::Identity),
         )
-        .map_err(|e| RevaultError::DecryptionFailed(e.to_string()))?;
+        .map_err(|e: age::DecryptError| RevaultError::DecryptionFailed(e.to_string()))?;
     reader
         .read_to_end(&mut decrypted)
-        .map_err(|e| RevaultError::DecryptionFailed(e.to_string()))?;
+        .map_err(|e: std::io::Error| RevaultError::DecryptionFailed(e.to_string()))?;
 
     let plaintext = String::from_utf8(decrypted)
         .map_err(|e| RevaultError::DecryptionFailed(e.to_string()))?;
