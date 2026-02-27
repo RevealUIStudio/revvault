@@ -1,0 +1,28 @@
+[package]
+name = "revault-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Tauri desktop app for Revault"
+
+[lib]
+name = "revault_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "revault-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+revault-core = { workspace = true }
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+arboard = { workspace = true }
+secrecy = { workspace = true }
+anyhow = { workspace = true }

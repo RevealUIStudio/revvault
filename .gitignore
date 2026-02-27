@@ -1,0 +1,29 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Nix
+/result
+.direnv/
+
+# IDE
+.vscode/
+.zed/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+!.envrc
+
+# Tauri
+crates/tauri-app/gen/
