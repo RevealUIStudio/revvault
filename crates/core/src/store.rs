@@ -44,6 +44,7 @@ impl PassageStore {
 
     /// Get (decrypt) a secret by its path.
     pub fn get(&self, path: &str) -> Result<SecretString> {
+        validate_path(path)?;
         let file_path = self.resolve_path(path)?;
         let ciphertext = std::fs::read(&file_path)
             .map_err(|_| RevaultError::SecretNotFound(path.to_string()))?;
@@ -52,6 +53,7 @@ impl PassageStore {
 
     /// Set (encrypt and write) a secret at the given path.
     pub fn set(&self, path: &str, plaintext: &[u8]) -> Result<()> {
+        validate_path(path)?;
         let file_path = self.secret_file_path(path);
 
         if file_path.exists() {
@@ -70,6 +72,7 @@ impl PassageStore {
 
     /// Overwrite an existing secret (or create if missing).
     pub fn upsert(&self, path: &str, plaintext: &[u8]) -> Result<()> {
+        validate_path(path)?;
         let file_path = self.secret_file_path(path);
 
         if let Some(parent) = file_path.parent() {
@@ -163,6 +166,7 @@ impl PassageStore {
 
     /// Delete a secret by its path.
     pub fn delete(&self, path: &str) -> Result<()> {
+        validate_path(path)?;
         let file_path = self.resolve_path(path)?;
         std::fs::remove_file(&file_path)?;
 
@@ -209,5 +213,294 @@ impl PassageStore {
                 break;
             }
         }
+    }
+}
+
+/// Validate a secret path to prevent directory traversal and other attacks.
+fn validate_path(path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(RevaultError::InvalidPath("path is empty".into()));
+    }
+    if path.contains('\0') {
+        return Err(RevaultError::InvalidPath("path contains null byte".into()));
+    }
+    if path.starts_with('/') || path.starts_with('\\') {
+        return Err(RevaultError::InvalidPath("path must be relative".into()));
+    }
+    for segment in path.split(['/', '\\']) {
+        if segment == ".." || segment == "." {
+            return Err(RevaultError::InvalidPath(
+                "path traversal not allowed".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::ExposeSecret;
+
+    /// Create a temp store with a generated identity and recipients file.
+    fn setup_temp_store() -> (tempfile::TempDir, PassageStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store_dir = dir.path().join("store");
+        std::fs::create_dir_all(&store_dir).unwrap();
+
+        let id = age::x25519::Identity::generate();
+        let recipient = id.to_public();
+
+        let id_file = dir.path().join("keys.txt");
+        std::fs::write(
+            &id_file,
+            format!(
+                "# test key\n{}\n",
+                secrecy::ExposeSecret::expose_secret(&id.to_string())
+            ),
+        )
+        .unwrap();
+
+        let recip_file = store_dir.join(".age-recipients");
+        std::fs::write(&recip_file, format!("{}\n", recipient)).unwrap();
+
+        let config = Config {
+            store_dir,
+            identity_file: id_file,
+            recipients_file: recip_file,
+        };
+
+        let store = PassageStore::open(config).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn set_and_get_roundtrip() {
+        let (_dir, store) = setup_temp_store();
+
+        store.set("credentials/stripe/secret-key", b"sk_live_123").unwrap();
+        let secret = store.get("credentials/stripe/secret-key").unwrap();
+        assert_eq!(secret.expose_secret(), "sk_live_123");
+    }
+
+    #[test]
+    fn set_rejects_duplicate() {
+        let (_dir, store) = setup_temp_store();
+
+        store.set("misc/token", b"value1").unwrap();
+        let err = store.set("misc/token", b"value2").unwrap_err();
+        assert!(matches!(err, RevaultError::SecretAlreadyExists(_)));
+    }
+
+    #[test]
+    fn upsert_overwrites_existing() {
+        let (_dir, store) = setup_temp_store();
+
+        store.set("misc/token", b"old_value").unwrap();
+        store.upsert("misc/token", b"new_value").unwrap();
+
+        let secret = store.get("misc/token").unwrap();
+        assert_eq!(secret.expose_secret(), "new_value");
+    }
+
+    #[test]
+    fn upsert_creates_new() {
+        let (_dir, store) = setup_temp_store();
+
+        store.upsert("misc/fresh", b"brand_new").unwrap();
+        let secret = store.get("misc/fresh").unwrap();
+        assert_eq!(secret.expose_secret(), "brand_new");
+    }
+
+    #[test]
+    fn list_with_nested_directories() {
+        let (_dir, store) = setup_temp_store();
+
+        store.set("credentials/stripe/secret-key", b"sk1").unwrap();
+        store.set("credentials/stripe/publishable-key", b"pk1").unwrap();
+        store.set("ssh/github", b"key1").unwrap();
+        store.set("misc/note", b"hello").unwrap();
+
+        let entries = store.list(None).unwrap();
+        assert_eq!(entries.len(), 4);
+
+        // Sorted alphabetically
+        assert_eq!(entries[0].path, "credentials/stripe/publishable-key");
+        assert_eq!(entries[1].path, "credentials/stripe/secret-key");
+        assert_eq!(entries[2].path, "misc/note");
+        assert_eq!(entries[3].path, "ssh/github");
+    }
+
+    #[test]
+    fn list_with_prefix_filter() {
+        let (_dir, store) = setup_temp_store();
+
+        store.set("credentials/stripe/sk", b"v1").unwrap();
+        store.set("credentials/neon/db", b"v2").unwrap();
+        store.set("ssh/github", b"v3").unwrap();
+
+        let entries = store.list(Some("credentials")).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        let entries = store.list(Some("ssh")).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "ssh/github");
+    }
+
+    #[test]
+    fn search_returns_fuzzy_matches() {
+        let (_dir, store) = setup_temp_store();
+
+        store.set("credentials/stripe/secret-key", b"v1").unwrap();
+        store.set("credentials/stripe/publishable-key", b"v2").unwrap();
+        store.set("ssh/github", b"v3").unwrap();
+
+        let results = store.search("stripe").unwrap();
+        assert_eq!(results.len(), 2);
+        // Both stripe entries should match
+        assert!(results.iter().all(|e| e.path.contains("stripe")));
+    }
+
+    #[test]
+    fn delete_removes_file_and_cleans_dirs() {
+        let (_dir, store) = setup_temp_store();
+
+        store.set("deep/nested/secret", b"value").unwrap();
+        assert!(store.get("deep/nested/secret").is_ok());
+
+        store.delete("deep/nested/secret").unwrap();
+
+        // Secret should be gone
+        assert!(matches!(
+            store.get("deep/nested/secret").unwrap_err(),
+            RevaultError::SecretNotFound(_)
+        ));
+
+        // Empty parent directories should be cleaned up
+        let nested_dir = store.store_dir().join("deep/nested");
+        assert!(!nested_dir.exists());
+        let deep_dir = store.store_dir().join("deep");
+        assert!(!deep_dir.exists());
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_error() {
+        let (_dir, store) = setup_temp_store();
+
+        let err = store.delete("does/not/exist").unwrap_err();
+        assert!(matches!(err, RevaultError::SecretNotFound(_)));
+    }
+
+    #[test]
+    fn get_nonexistent_returns_error() {
+        let (_dir, store) = setup_temp_store();
+
+        let err = store.get("no/such/secret").unwrap_err();
+        assert!(matches!(err, RevaultError::SecretNotFound(_)));
+    }
+
+    #[test]
+    fn validate_rejects_empty_path() {
+        assert!(matches!(
+            validate_path(""),
+            Err(RevaultError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_absolute_path() {
+        assert!(matches!(
+            validate_path("/etc/passwd"),
+            Err(RevaultError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_traversal() {
+        assert!(matches!(
+            validate_path("../../etc/passwd"),
+            Err(RevaultError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            validate_path("foo/../../../etc/shadow"),
+            Err(RevaultError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            validate_path("./hidden"),
+            Err(RevaultError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_null_bytes() {
+        assert!(matches!(
+            validate_path("foo\0bar"),
+            Err(RevaultError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_backslash_traversal() {
+        assert!(matches!(
+            validate_path("foo\\..\\..\\etc\\passwd"),
+            Err(RevaultError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_valid_paths() {
+        assert!(validate_path("credentials/stripe/secret-key").is_ok());
+        assert!(validate_path("ssh/github").is_ok());
+        assert!(validate_path("single-level").is_ok());
+        assert!(validate_path("deep/nested/path/to/secret").is_ok());
+    }
+
+    #[test]
+    fn store_rejects_traversal_on_set() {
+        let (_dir, store) = setup_temp_store();
+        assert!(matches!(
+            store.set("../../etc/passwd", b"hacked"),
+            Err(RevaultError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn store_rejects_traversal_on_get() {
+        let (_dir, store) = setup_temp_store();
+        assert!(matches!(
+            store.get("../../../etc/shadow"),
+            Err(RevaultError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn namespace_parsed_from_list() {
+        let (_dir, store) = setup_temp_store();
+
+        store.set("credentials/test", b"v1").unwrap();
+        store.set("ssh/key", b"v2").unwrap();
+        store.set("revealui/config", b"v3").unwrap();
+
+        let entries = store.list(None).unwrap();
+        assert_eq!(entries.len(), 3);
+
+        let cred = entries.iter().find(|e| e.path == "credentials/test").unwrap();
+        assert_eq!(cred.namespace, Namespace::Credentials);
+
+        let ssh = entries.iter().find(|e| e.path == "ssh/key").unwrap();
+        assert_eq!(ssh.namespace, Namespace::Ssh);
+
+        let rui = entries.iter().find(|e| e.path == "revealui/config").unwrap();
+        assert_eq!(rui.namespace, Namespace::RevealUI);
+    }
+
+    #[test]
+    fn secret_files_have_age_extension() {
+        let (_dir, store) = setup_temp_store();
+
+        store.set("misc/token", b"value").unwrap();
+        let entries = store.list(None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].file_path.extension().unwrap() == "age");
     }
 }

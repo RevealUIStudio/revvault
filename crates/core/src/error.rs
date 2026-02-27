@@ -18,6 +18,9 @@ pub enum RevaultError {
     #[error("secret already exists: {0}")]
     SecretAlreadyExists(String),
 
+    #[error("invalid secret path: {0}")]
+    InvalidPath(String),
+
     #[error("encryption failed: {0}")]
     EncryptionFailed(String),
 

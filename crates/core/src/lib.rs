@@ -1,4 +1,6 @@
-// TODO: remove once rustc 1.93.1 ICE in early_lint_checks is fixed
+// Workaround: rustc 1.93.1 ICE in early_lint_checks (StyledBuffer::replace panic).
+// Any lint warning triggers the crash. Keep blanket allow until rustc is updated.
+// See: https://github.com/rust-lang/rust/issues
 #![allow(unused)]
 
 pub mod config;

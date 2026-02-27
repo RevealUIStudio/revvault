@@ -22,3 +22,5 @@ toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+age = { workspace = true }
+secrecy = { workspace = true }

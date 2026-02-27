@@ -53,9 +53,12 @@ impl Config {
 
         // On WSL, check /mnt/c path if we're under Linux
         let candidates = if cfg!(target_os = "linux") {
+            let win_user = env::var("WINDOWS_USERNAME").unwrap_or_else(|_| "joshu".into());
             vec![
                 home.join(".revealui/passage-store"),
-                PathBuf::from("/mnt/c/Users/joshu/.revealui/passage-store"),
+                PathBuf::from("/mnt/c/Users")
+                    .join(&win_user)
+                    .join(".revealui/passage-store"),
             ]
         } else {
             vec![home.join(".revealui/passage-store")]
@@ -86,9 +89,12 @@ impl Config {
         let home = home_dir()?;
 
         let candidates = if cfg!(target_os = "linux") {
+            let win_user = env::var("WINDOWS_USERNAME").unwrap_or_else(|_| "joshu".into());
             vec![
                 home.join(".age-identity/keys.txt"),
-                PathBuf::from("/mnt/c/Users/joshu/.age-identity/keys.txt"),
+                PathBuf::from("/mnt/c/Users")
+                    .join(&win_user)
+                    .join(".age-identity/keys.txt"),
             ]
         } else {
             vec![home.join(".age-identity/keys.txt")]

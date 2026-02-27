@@ -7,7 +7,7 @@ use crate::error::{Result, RevaultError};
 use crate::store::PassageStore;
 
 /// Record of a single imported file.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportRecord {
     pub source_path: PathBuf,
     pub target_path: String,
@@ -103,18 +103,6 @@ impl PlaintextImporter {
     }
 }
 
-// Derive Clone for ImportRecord so records.to_vec() works
-impl Clone for ImportRecord {
-    fn clone(&self) -> Self {
-        Self {
-            source_path: self.source_path.clone(),
-            target_path: self.target_path.clone(),
-            namespace: self.namespace.clone(),
-            categorized_by: self.categorized_by.clone(),
-        }
-    }
-}
-
 /// Heuristic categorization of a plaintext file into namespace/name.
 fn categorize_by_filename(name: &str) -> (&str, String, &str) {
     let lower = name.to_lowercase();
@@ -161,4 +149,44 @@ fn sanitize_name(name: &str) -> String {
     name.replace(' ', "-")
         .replace('_', "-")
         .to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn categorize_known_services() {
+        let cases = vec![
+            ("stripe-api-key", "credentials/stripe", "filename:stripe"),
+            ("vercel_token", "credentials/vercel", "filename:vercel"),
+            ("neon-connection-string", "credentials/neon", "filename:neon"),
+            ("supabase_anon_key", "credentials/supabase", "filename:supabase"),
+            ("github-pat", "credentials/github", "filename:github"),
+            ("gh_token", "credentials/github", "filename:github"),
+            ("openai-api-key", "credentials/openai", "filename:openai"),
+            ("gpt-key", "credentials/openai", "filename:openai"),
+            ("anthropic-key", "credentials/anthropic", "filename:anthropic"),
+            ("claude-api-key", "credentials/anthropic", "filename:anthropic"),
+            ("aws-access-key", "credentials/aws", "filename:aws"),
+            ("ssh-deploy-key", "ssh", "filename:ssh"),
+            ("id_ed25519", "ssh", "filename:ssh"),
+            ("database-url", "credentials/database", "filename:database"),
+            ("postgres-password", "credentials/database", "filename:database"),
+            ("random-notes", "misc", "uncategorized"),
+        ];
+
+        for (filename, expected_ns, expected_reason) in cases {
+            let (ns, _name, reason) = categorize_by_filename(filename);
+            assert_eq!(ns, expected_ns, "namespace mismatch for {filename}");
+            assert_eq!(reason, expected_reason, "reason mismatch for {filename}");
+        }
+    }
+
+    #[test]
+    fn sanitize_normalizes_names() {
+        assert_eq!(sanitize_name("My API Key"), "my-api-key");
+        assert_eq!(sanitize_name("stripe_secret_key"), "stripe-secret-key");
+        assert_eq!(sanitize_name("UPPER"), "upper");
+    }
 }
