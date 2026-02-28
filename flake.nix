@@ -32,6 +32,9 @@
           libappindicator-gtk3
         ];
 
+        # Mesa drivers for EGL/GL (needed for WebKitGTK rendering)
+        mesaDrivers = pkgs.mesa.drivers;
+
         # All native build inputs
         nativeBuildInputs = with pkgs; [
           rustToolchain
@@ -57,8 +60,11 @@
             echo "  cargo nextest run          # run tests"
           '';
 
-          # Tauri needs these at runtime
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath tauriDeps;
+          # Tauri needs these at runtime.
+          # mesaDrivers provides libEGL_mesa.so.0 (needed by libglvnd) and
+          # DRI drivers (d3d12 for WSLg, llvmpipe for software fallback).
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (tauriDeps ++ [ mesaDrivers ]);
+          LIBGL_DRIVERS_PATH = "${mesaDrivers}/lib/dri";
 
           # For openssl-sys
           OPENSSL_DIR = "${pkgs.openssl.dev}";
