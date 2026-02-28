@@ -175,7 +175,11 @@ fn real_store_list_and_decrypt() {
             "entry {} should point to .age file",
             entry.path
         );
-        assert!(entry.file_path.exists(), "file should exist: {}", entry.path);
+        assert!(
+            entry.file_path.exists(),
+            "file should exist: {}",
+            entry.path
+        );
     }
 
     // Try to decrypt the first entry

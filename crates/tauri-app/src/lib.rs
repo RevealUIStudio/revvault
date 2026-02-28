@@ -38,14 +38,23 @@ fn get_secret(state: State<AppState>, path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn set_secret(state: State<AppState>, path: String, value: String, force: bool) -> Result<(), String> {
+fn set_secret(
+    state: State<AppState>,
+    path: String,
+    value: String,
+    force: bool,
+) -> Result<(), String> {
     let guard = state.store.lock().map_err(|e| e.to_string())?;
     let store = guard.as_ref().ok_or("Store not initialized")?;
 
     if force {
-        store.upsert(&path, value.as_bytes()).map_err(|e| e.to_string())
+        store
+            .upsert(&path, value.as_bytes())
+            .map_err(|e| e.to_string())
     } else {
-        store.set(&path, value.as_bytes()).map_err(|e| e.to_string())
+        store
+            .set(&path, value.as_bytes())
+            .map_err(|e| e.to_string())
     }
 }
 

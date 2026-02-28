@@ -40,12 +40,7 @@ impl Namespace {
 
     /// List all known built-in namespaces.
     pub fn builtins() -> Vec<Self> {
-        vec![
-            Self::RevealUI,
-            Self::Credentials,
-            Self::Ssh,
-            Self::Misc,
-        ]
+        vec![Self::RevealUI, Self::Credentials, Self::Ssh, Self::Misc]
     }
 }
 
@@ -75,8 +70,14 @@ mod tests {
 
     #[test]
     fn parse_known_namespaces() {
-        assert_eq!(Namespace::from_path_segment("revealui"), Namespace::RevealUI);
-        assert_eq!(Namespace::from_path_segment("credentials"), Namespace::Credentials);
+        assert_eq!(
+            Namespace::from_path_segment("revealui"),
+            Namespace::RevealUI
+        );
+        assert_eq!(
+            Namespace::from_path_segment("credentials"),
+            Namespace::Credentials
+        );
         assert_eq!(Namespace::from_path_segment("ssh"), Namespace::Ssh);
     }
 

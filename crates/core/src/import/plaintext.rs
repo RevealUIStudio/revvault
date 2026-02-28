@@ -76,7 +76,11 @@ impl PlaintextImporter {
     }
 
     /// Execute the import (encrypt files into the store).
-    pub fn execute(&self, store: &PassageStore, records: &[ImportRecord]) -> Result<MigrationManifest> {
+    pub fn execute(
+        &self,
+        store: &PassageStore,
+        records: &[ImportRecord],
+    ) -> Result<MigrationManifest> {
         for record in records {
             let content = std::fs::read_to_string(&record.source_path).map_err(|e| {
                 RevvaultError::MigrationFailed(format!(
@@ -117,7 +121,11 @@ fn categorize_by_filename(name: &str) -> (&str, String, &str) {
         return ("credentials/neon", sanitize_name(name), "filename:neon");
     }
     if lower.contains("supabase") {
-        return ("credentials/supabase", sanitize_name(name), "filename:supabase");
+        return (
+            "credentials/supabase",
+            sanitize_name(name),
+            "filename:supabase",
+        );
     }
     if lower.contains("github") || lower.contains("gh_") {
         return ("credentials/github", sanitize_name(name), "filename:github");
@@ -139,16 +147,18 @@ fn categorize_by_filename(name: &str) -> (&str, String, &str) {
         return ("ssh", sanitize_name(name), "filename:ssh");
     }
     if lower.contains("database") || lower.contains("postgres") || lower.contains("db_") {
-        return ("credentials/database", sanitize_name(name), "filename:database");
+        return (
+            "credentials/database",
+            sanitize_name(name),
+            "filename:database",
+        );
     }
 
     ("misc", sanitize_name(name), "uncategorized")
 }
 
 fn sanitize_name(name: &str) -> String {
-    name.replace(' ', "-")
-        .replace('_', "-")
-        .to_lowercase()
+    name.replace([' ', '_'], "-").to_lowercase()
 }
 
 #[cfg(test)]
@@ -160,19 +170,39 @@ mod tests {
         let cases = vec![
             ("stripe-api-key", "credentials/stripe", "filename:stripe"),
             ("vercel_token", "credentials/vercel", "filename:vercel"),
-            ("neon-connection-string", "credentials/neon", "filename:neon"),
-            ("supabase_anon_key", "credentials/supabase", "filename:supabase"),
+            (
+                "neon-connection-string",
+                "credentials/neon",
+                "filename:neon",
+            ),
+            (
+                "supabase_anon_key",
+                "credentials/supabase",
+                "filename:supabase",
+            ),
             ("github-pat", "credentials/github", "filename:github"),
             ("gh_token", "credentials/github", "filename:github"),
             ("openai-api-key", "credentials/openai", "filename:openai"),
             ("gpt-key", "credentials/openai", "filename:openai"),
-            ("anthropic-key", "credentials/anthropic", "filename:anthropic"),
-            ("claude-api-key", "credentials/anthropic", "filename:anthropic"),
+            (
+                "anthropic-key",
+                "credentials/anthropic",
+                "filename:anthropic",
+            ),
+            (
+                "claude-api-key",
+                "credentials/anthropic",
+                "filename:anthropic",
+            ),
             ("aws-access-key", "credentials/aws", "filename:aws"),
             ("ssh-deploy-key", "ssh", "filename:ssh"),
             ("id_ed25519", "ssh", "filename:ssh"),
             ("database-url", "credentials/database", "filename:database"),
-            ("postgres-password", "credentials/database", "filename:database"),
+            (
+                "postgres-password",
+                "credentials/database",
+                "filename:database",
+            ),
             ("random-notes", "misc", "uncategorized"),
         ];
 

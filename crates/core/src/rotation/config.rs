@@ -34,8 +34,7 @@ impl RotationConfig {
         }
 
         let contents = std::fs::read_to_string(&config_path)?;
-        toml::from_str(&contents).map_err(|e| {
-            RevvaultError::Other(anyhow::anyhow!("invalid rotation.toml: {e}"))
-        })
+        toml::from_str(&contents)
+            .map_err(|e| RevvaultError::Other(anyhow::anyhow!("invalid rotation.toml: {e}")))
     }
 }

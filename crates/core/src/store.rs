@@ -113,9 +113,7 @@ impl PassageStore {
                 continue;
             }
 
-            let relative = path
-                .strip_prefix(&self.config.store_dir)
-                .unwrap_or(path);
+            let relative = path.strip_prefix(&self.config.store_dir).unwrap_or(path);
 
             // Remove .age extension from the logical path
             let logical_path = relative
@@ -278,7 +276,9 @@ mod tests {
     fn set_and_get_roundtrip() {
         let (_dir, store) = setup_temp_store();
 
-        store.set("credentials/stripe/secret-key", b"sk_live_123").unwrap();
+        store
+            .set("credentials/stripe/secret-key", b"sk_live_123")
+            .unwrap();
         let secret = store.get("credentials/stripe/secret-key").unwrap();
         assert_eq!(secret.expose_secret(), "sk_live_123");
     }
@@ -317,7 +317,9 @@ mod tests {
         let (_dir, store) = setup_temp_store();
 
         store.set("credentials/stripe/secret-key", b"sk1").unwrap();
-        store.set("credentials/stripe/publishable-key", b"pk1").unwrap();
+        store
+            .set("credentials/stripe/publishable-key", b"pk1")
+            .unwrap();
         store.set("ssh/github", b"key1").unwrap();
         store.set("misc/note", b"hello").unwrap();
 
@@ -352,7 +354,9 @@ mod tests {
         let (_dir, store) = setup_temp_store();
 
         store.set("credentials/stripe/secret-key", b"v1").unwrap();
-        store.set("credentials/stripe/publishable-key", b"v2").unwrap();
+        store
+            .set("credentials/stripe/publishable-key", b"v2")
+            .unwrap();
         store.set("ssh/github", b"v3").unwrap();
 
         let results = store.search("stripe").unwrap();
@@ -484,13 +488,19 @@ mod tests {
         let entries = store.list(None).unwrap();
         assert_eq!(entries.len(), 3);
 
-        let cred = entries.iter().find(|e| e.path == "credentials/test").unwrap();
+        let cred = entries
+            .iter()
+            .find(|e| e.path == "credentials/test")
+            .unwrap();
         assert_eq!(cred.namespace, Namespace::Credentials);
 
         let ssh = entries.iter().find(|e| e.path == "ssh/key").unwrap();
         assert_eq!(ssh.namespace, Namespace::Ssh);
 
-        let rui = entries.iter().find(|e| e.path == "revealui/config").unwrap();
+        let rui = entries
+            .iter()
+            .find(|e| e.path == "revealui/config")
+            .unwrap();
         assert_eq!(rui.namespace, Namespace::RevealUI);
     }
 

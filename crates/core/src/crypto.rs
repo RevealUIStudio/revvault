@@ -8,10 +8,9 @@ use crate::identity::Identity;
 
 /// Encrypt plaintext bytes to one or more age recipients.
 pub fn encrypt(plaintext: &[u8], recipients: &[x25519::Recipient]) -> Result<Vec<u8>> {
-    let encryptor = age::Encryptor::with_recipients(
-        recipients.iter().map(|r| r as &dyn age::Recipient),
-    )
-    .map_err(|e| RevvaultError::EncryptionFailed(e.to_string()))?;
+    let encryptor =
+        age::Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn age::Recipient))
+            .map_err(|e| RevvaultError::EncryptionFailed(e.to_string()))?;
 
     let mut encrypted = vec![];
     let mut writer = encryptor
@@ -51,8 +50,8 @@ pub fn decrypt(ciphertext: &[u8], identity: &Identity) -> Result<SecretString> {
         .read_to_end(&mut decrypted)
         .map_err(|e: std::io::Error| RevvaultError::DecryptionFailed(e.to_string()))?;
 
-    let plaintext = String::from_utf8(decrypted)
-        .map_err(|e| RevvaultError::DecryptionFailed(e.to_string()))?;
+    let plaintext =
+        String::from_utf8(decrypted).map_err(|e| RevvaultError::DecryptionFailed(e.to_string()))?;
 
     Ok(SecretString::from(plaintext))
 }
