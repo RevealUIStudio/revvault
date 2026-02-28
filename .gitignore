@@ -6,6 +6,7 @@ Cargo.lock
 # Node / Frontend
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 # Nix
 /result
