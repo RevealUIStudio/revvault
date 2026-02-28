@@ -240,6 +240,9 @@ fn is_likely_note(name: &str) -> bool {
         "implement",
         "scan",
         "script",
+        "variable names",
+        "variable-names",
+        "some",
     ];
     keywords.iter().any(|kw| name.contains(kw))
 }
@@ -305,6 +308,9 @@ mod tests {
                 "filename:database",
             ),
             ("random-notes", "misc", "uncategorized"),
+            // Files with note keywords override secret keywords
+            ("env-variable-names", "misc", "uncategorized"),
+            ("some-key", "misc", "uncategorized"),
         ];
 
         for (filename, expected_ns, expected_reason) in cases {
