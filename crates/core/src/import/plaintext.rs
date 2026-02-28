@@ -111,10 +111,11 @@ impl PlaintextImporter {
 fn categorize_by_filename(name: &str) -> (&str, String, &str) {
     let lower = name.to_lowercase();
 
+    // Cloud / SaaS providers
     if lower.contains("stripe") {
         return ("credentials/stripe", sanitize_name(name), "filename:stripe");
     }
-    if lower.contains("vercel") {
+    if lower.contains("vercel") && is_likely_secret(&lower) {
         return ("credentials/vercel", sanitize_name(name), "filename:vercel");
     }
     if lower.contains("neon") {
@@ -127,9 +128,24 @@ fn categorize_by_filename(name: &str) -> (&str, String, &str) {
             "filename:supabase",
         );
     }
-    if lower.contains("github") || lower.contains("gh_") {
-        return ("credentials/github", sanitize_name(name), "filename:github");
+    if lower.contains("vultr") {
+        return ("credentials/vultr", sanitize_name(name), "filename:vultr");
     }
+    if lower.contains("namecheap") {
+        return (
+            "credentials/namecheap",
+            sanitize_name(name),
+            "filename:namecheap",
+        );
+    }
+    if lower.contains("redis") {
+        return ("credentials/redis", sanitize_name(name), "filename:redis");
+    }
+    if lower.contains("resend") {
+        return ("credentials/resend", sanitize_name(name), "filename:resend");
+    }
+
+    // AI providers
     if lower.contains("openai") || lower.contains("gpt") {
         return ("credentials/openai", sanitize_name(name), "filename:openai");
     }
@@ -140,9 +156,26 @@ fn categorize_by_filename(name: &str) -> (&str, String, &str) {
             "filename:anthropic",
         );
     }
+    if lower.contains("hugging") || lower.contains("huggingface") {
+        return (
+            "credentials/huggingface",
+            sanitize_name(name),
+            "filename:huggingface",
+        );
+    }
+
+    // Dev platforms
+    if lower.contains("github") || lower.contains("gh_") {
+        return ("credentials/github", sanitize_name(name), "filename:github");
+    }
+    if lower.contains("npm") && is_likely_secret(&lower) {
+        return ("credentials/npm", sanitize_name(name), "filename:npm");
+    }
     if lower.contains("aws") {
         return ("credentials/aws", sanitize_name(name), "filename:aws");
     }
+
+    // Generic secret indicators
     if lower.contains("ssh") || lower.contains("id_rsa") || lower.contains("id_ed25519") {
         return ("ssh", sanitize_name(name), "filename:ssh");
     }
@@ -153,8 +186,62 @@ fn categorize_by_filename(name: &str) -> (&str, String, &str) {
             "filename:database",
         );
     }
+    if is_likely_secret(&lower) && !is_likely_note(&lower) {
+        return ("misc", sanitize_name(name), "filename:secret-keyword");
+    }
 
     ("misc", sanitize_name(name), "uncategorized")
+}
+
+/// Check if a filename suggests it contains a secret value.
+fn is_likely_secret(name: &str) -> bool {
+    let keywords = [
+        "api_key",
+        "api-key",
+        "apikey",
+        "secret",
+        "token",
+        "password",
+        "pass",
+        "credential",
+        "key",
+        "env",
+        "connection",
+        "conn_str",
+        "2fa",
+        "login",
+    ];
+    keywords.iter().any(|kw| name.contains(kw))
+}
+
+/// Check if a filename suggests it's a note/document rather than a secret.
+fn is_likely_note(name: &str) -> bool {
+    let keywords = [
+        "prompt",
+        "plan",
+        "idea",
+        "list",
+        "info",
+        "example",
+        "tutorial",
+        "readme",
+        "poem",
+        "roadmap",
+        "game",
+        "fighter",
+        "image",
+        "blog",
+        "code",
+        "output",
+        "build",
+        "install",
+        "generate",
+        "display",
+        "implement",
+        "scan",
+        "script",
+    ];
+    keywords.iter().any(|kw| name.contains(kw))
 }
 
 fn sanitize_name(name: &str) -> String {
@@ -180,6 +267,14 @@ mod tests {
                 "credentials/supabase",
                 "filename:supabase",
             ),
+            ("vultr-api-key", "credentials/vultr", "filename:vultr"),
+            (
+                "namecheap-password",
+                "credentials/namecheap",
+                "filename:namecheap",
+            ),
+            ("redis-cloud-env-var", "credentials/redis", "filename:redis"),
+            ("resend-api-key", "credentials/resend", "filename:resend"),
             ("github-pat", "credentials/github", "filename:github"),
             ("gh_token", "credentials/github", "filename:github"),
             ("openai-api-key", "credentials/openai", "filename:openai"),
@@ -194,6 +289,12 @@ mod tests {
                 "credentials/anthropic",
                 "filename:anthropic",
             ),
+            (
+                "hugging-face-token",
+                "credentials/huggingface",
+                "filename:huggingface",
+            ),
+            ("npm-2fa", "credentials/npm", "filename:npm"),
             ("aws-access-key", "credentials/aws", "filename:aws"),
             ("ssh-deploy-key", "ssh", "filename:ssh"),
             ("id_ed25519", "ssh", "filename:ssh"),

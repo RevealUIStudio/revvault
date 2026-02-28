@@ -23,11 +23,24 @@ pub struct MigrateArgs {
     /// Skip confirmation prompts
     #[arg(long)]
     pub force: bool,
+
+    /// Only import files that match a known service (skip uncategorized)
+    #[arg(long)]
+    pub secrets_only: bool,
 }
 
 pub fn run(args: MigrateArgs) -> anyhow::Result<()> {
     let importer = PlaintextImporter::new(args.plaintext_dir.clone());
     let records = importer.scan()?;
+
+    let records: Vec<_> = if args.secrets_only {
+        records
+            .into_iter()
+            .filter(|r| r.categorized_by != "uncategorized")
+            .collect()
+    } else {
+        records
+    };
 
     if records.is_empty() {
         eprintln!("No files found to migrate.");
