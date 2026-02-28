@@ -1,5 +1,5 @@
 {
-  description = "Revault — age-encrypted secret vault with CLI and Tauri desktop app";
+  description = "Revvault — age-encrypted secret vault with CLI and Tauri desktop app";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -51,7 +51,7 @@
           ];
 
           shellHook = ''
-            echo "revault dev shell ready ($(rustc --version))"
+            echo "revvault dev shell ready ($(rustc --version))"
             echo "  cargo build --workspace    # build all crates"
             echo "  cargo tauri dev            # launch Tauri app"
             echo "  cargo nextest run          # run tests"

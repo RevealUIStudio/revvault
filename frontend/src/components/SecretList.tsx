@@ -1,7 +1,4 @@
-interface SecretInfo {
-  path: string;
-  namespace: string;
-}
+import type { SecretInfo } from "../types";
 
 interface SecretListProps {
   secrets: SecretInfo[];

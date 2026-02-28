@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
-use crate::error::{Result, RevaultError};
+use crate::error::{Result, RevvaultError};
 use crate::store::PassageStore;
 
 /// Record of a single imported file.
@@ -36,7 +36,7 @@ impl PlaintextImporter {
     /// Scan the source directory and categorize files into store paths.
     pub fn scan(&self) -> Result<Vec<ImportRecord>> {
         if !self.source_dir.is_dir() {
-            return Err(RevaultError::MigrationFailed(format!(
+            return Err(RevvaultError::MigrationFailed(format!(
                 "source directory not found: {}",
                 self.source_dir.display()
             )));
@@ -79,7 +79,7 @@ impl PlaintextImporter {
     pub fn execute(&self, store: &PassageStore, records: &[ImportRecord]) -> Result<MigrationManifest> {
         for record in records {
             let content = std::fs::read_to_string(&record.source_path).map_err(|e| {
-                RevaultError::MigrationFailed(format!(
+                RevvaultError::MigrationFailed(format!(
                     "failed to read {}: {e}",
                     record.source_path.display()
                 ))

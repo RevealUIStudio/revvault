@@ -9,7 +9,7 @@ license = "MIT"
 authors = ["Joshua Vaughn <joshua.v.dev@gmail.com>"]
 
 [workspace.dependencies]
-revault-core = { path = "crates/core" }
+revvault-core = { path = "crates/core" }
 age = { version = "0.11", features = ["armor"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

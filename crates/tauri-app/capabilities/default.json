@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for Revault",
+  "description": "Default capabilities for Revvault",
   "windows": ["main"],
   "permissions": [
     "core:default",

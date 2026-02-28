@@ -2,8 +2,8 @@ use std::io::{self, Read};
 
 use clap::Args;
 
-use revault_core::Config;
-use revault_core::PassageStore;
+use revvault_core::Config;
+use revvault_core::PassageStore;
 
 #[derive(Args)]
 pub struct SetArgs {

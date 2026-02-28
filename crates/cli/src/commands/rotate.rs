@@ -1,7 +1,7 @@
 use clap::Args;
 
-use revault_core::rotation::RotationConfig;
-use revault_core::Config;
+use revvault_core::rotation::RotationConfig;
+use revvault_core::Config;
 
 #[derive(Args)]
 pub struct RotateArgs {
@@ -46,7 +46,7 @@ pub async fn run(args: RotateArgs) -> anyhow::Result<()> {
 
 pub fn status() -> anyhow::Result<()> {
     let config = Config::resolve()?;
-    let log_path = config.store_dir.join(".revault/rotation-log.jsonl");
+    let log_path = config.store_dir.join(".revvault/rotation-log.jsonl");
 
     if !log_path.exists() {
         eprintln!("No rotation history found.");

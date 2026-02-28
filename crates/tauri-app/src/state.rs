@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use revault_core::{Config, PassageStore};
+use revvault_core::{Config, PassageStore};
 
 /// Managed Tauri state wrapping the PassageStore.
 pub struct AppState {

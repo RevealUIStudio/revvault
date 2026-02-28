@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use clap::Args;
 
-use revault_core::Config;
-use revault_core::PassageStore;
+use revvault_core::Config;
+use revvault_core::PassageStore;
 
 #[derive(Args)]
 pub struct ListArgs {
@@ -36,7 +36,7 @@ pub fn run(args: ListArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_tree(entries: &[revault_core::store::SecretEntry]) {
+fn print_tree(entries: &[revvault_core::store::SecretEntry]) {
     // Build a tree structure from paths
     let mut tree: BTreeMap<String, Vec<String>> = BTreeMap::new();
 

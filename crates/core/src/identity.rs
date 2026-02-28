@@ -3,7 +3,7 @@ use std::path::Path;
 
 use age::x25519;
 
-use crate::error::{Result, RevaultError};
+use crate::error::{Result, RevvaultError};
 
 /// Loaded age identity (private key) used for decryption.
 pub struct Identity {
@@ -17,7 +17,7 @@ impl Identity {
     /// plus comment lines starting with `#`.
     pub fn from_file(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
-            .map_err(|_| RevaultError::IdentityNotFound(path.to_path_buf()))?;
+            .map_err(|_| RevvaultError::IdentityNotFound(path.to_path_buf()))?;
 
         let identities: Vec<x25519::Identity> = contents
             .lines()
@@ -29,7 +29,7 @@ impl Identity {
             .collect();
 
         if identities.is_empty() {
-            return Err(RevaultError::DecryptionFailed(
+            return Err(RevvaultError::DecryptionFailed(
                 "no valid age identities found in key file".into(),
             ));
         }

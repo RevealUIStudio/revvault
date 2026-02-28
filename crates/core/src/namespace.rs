@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::RevaultError;
+use crate::error::RevvaultError;
 
 /// Top-level namespace categories mirroring the store directory structure.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -59,11 +59,11 @@ impl fmt::Display for Namespace {
 }
 
 impl FromStr for Namespace {
-    type Err = RevaultError;
+    type Err = RevvaultError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
-            return Err(RevaultError::InvalidNamespace("empty namespace".into()));
+            return Err(RevvaultError::InvalidNamespace("empty namespace".into()));
         }
         Ok(Self::from_path_segment(s))
     }

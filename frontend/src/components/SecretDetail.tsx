@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface SecretDetailProps {
@@ -11,6 +11,12 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
   const [value, setValue] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setRevealed(false);
+    setValue(null);
+    setCopied(false);
+  }, [path]);
 
   if (!path) {
     return (

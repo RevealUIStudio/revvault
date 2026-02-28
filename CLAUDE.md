@@ -1,11 +1,11 @@
-# Revault
+# Revvault
 
 Age-encrypted secret vault with CLI and Tauri desktop app.
 
 ## Architecture
 
 - `crates/core` — shared library (store, crypto, identity, config, namespaces, import, rotation)
-- `crates/cli` — `revault` CLI binary (clap)
+- `crates/cli` — `revvault` CLI binary (clap)
 - `crates/tauri-app` — Tauri 2 desktop backend
 - `frontend/` — React 19 + TypeScript + Tailwind CSS (Vite)
 
@@ -23,7 +23,7 @@ cargo tauri dev
 ## Store Format
 
 100% passage-compatible. Secrets stored as `.age` files in a directory hierarchy.
-Default store: `~/.revealui/passage-store`. Override with `REVAULT_STORE` env var.
+Default store: `~/.revealui/passage-store`. Override with `REVVAULT_STORE` env var.
 
 ## Conventions
 

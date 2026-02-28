@@ -1,14 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { SecretInfo } from "./types";
 import { SearchBar } from "./components/SearchBar";
 import { Sidebar } from "./components/Sidebar";
 import { SecretList } from "./components/SecretList";
 import { SecretDetail } from "./components/SecretDetail";
-
-interface SecretInfo {
-  path: string;
-  namespace: string;
-}
+import { CreateSecretDialog } from "./components/CreateSecretDialog";
 
 export default function App() {
   const [secrets, setSecrets] = useState<SecretInfo[]>([]);
@@ -16,14 +13,9 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeNamespace, setActiveNamespace] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
 
-  useEffect(() => {
-    invoke("init_store")
-      .then(() => loadSecrets())
-      .catch((e) => setError(String(e)));
-  }, []);
-
-  async function loadSecrets() {
+  const loadSecrets = useCallback(async () => {
     try {
       const result = await invoke<SecretInfo[]>("list_secrets", {
         prefix: activeNamespace,
@@ -33,7 +25,19 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
-  }
+  }, [activeNamespace]);
+
+  useEffect(() => {
+    invoke("init_store")
+      .then(() => loadSecrets())
+      .catch((e) => setError(String(e)));
+  }, [loadSecrets]);
+
+  useEffect(() => {
+    if (!searchQuery) {
+      loadSecrets();
+    }
+  }, [activeNamespace, searchQuery, loadSecrets]);
 
   async function handleSearch(query: string) {
     setSearchQuery(query);
@@ -54,17 +58,29 @@ export default function App() {
     setSelectedPath(null);
   }
 
-  useEffect(() => {
-    if (!searchQuery) {
-      loadSecrets();
-    }
-  }, [activeNamespace]);
+  function handleCreated(path: string) {
+    setShowCreate(false);
+    setSelectedPath(path);
+    loadSecrets();
+  }
 
   const namespaces = [...new Set(secrets.map((s) => s.namespace))].sort();
 
   return (
     <div className="flex h-screen flex-col">
-      <SearchBar query={searchQuery} onSearch={handleSearch} />
+      <div className="flex items-center border-b border-neutral-800 bg-neutral-900">
+        <div className="flex-1">
+          <SearchBar query={searchQuery} onSearch={handleSearch} />
+        </div>
+        <div className="px-4">
+          <button
+            onClick={() => setShowCreate(true)}
+            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+          >
+            + New
+          </button>
+        </div>
+      </div>
 
       {error && (
         <div className="border-b border-red-800 bg-red-950 px-4 py-2 text-sm text-red-300">
@@ -93,6 +109,12 @@ export default function App() {
           }}
         />
       </div>
+
+      <CreateSecretDialog
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        onCreated={handleCreated}
+      />
     </div>
   );
 }

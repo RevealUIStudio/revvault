@@ -13,7 +13,7 @@ pub mod rotation;
 pub mod store;
 
 pub use config::Config;
-pub use error::RevaultError;
+pub use error::RevvaultError;
 pub use identity::Identity;
 pub use namespace::Namespace;
 pub use store::PassageStore;

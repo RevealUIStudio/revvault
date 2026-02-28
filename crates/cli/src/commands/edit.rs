@@ -4,8 +4,8 @@ use std::process::Command;
 use clap::Args;
 use secrecy::ExposeSecret;
 
-use revault_core::Config;
-use revault_core::PassageStore;
+use revvault_core::Config;
+use revvault_core::PassageStore;
 
 #[derive(Args)]
 pub struct EditArgs {

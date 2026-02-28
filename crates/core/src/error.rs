@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum RevaultError {
+pub enum RevvaultError {
     #[error("identity file not found: {0}")]
     IdentityNotFound(PathBuf),
 
@@ -43,4 +43,4 @@ pub enum RevaultError {
     Other(#[from] anyhow::Error),
 }
 
-pub type Result<T> = std::result::Result<T, RevaultError>;
+pub type Result<T> = std::result::Result<T, RevvaultError>;

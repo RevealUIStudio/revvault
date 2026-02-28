@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use age::x25519;
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::error::{Result, RevaultError};
+use crate::error::{Result, RevvaultError};
 use crate::identity::Identity;
 
 /// Encrypt plaintext bytes to one or more age recipients.
@@ -11,18 +11,18 @@ pub fn encrypt(plaintext: &[u8], recipients: &[x25519::Recipient]) -> Result<Vec
     let encryptor = age::Encryptor::with_recipients(
         recipients.iter().map(|r| r as &dyn age::Recipient),
     )
-    .map_err(|e| RevaultError::EncryptionFailed(e.to_string()))?;
+    .map_err(|e| RevvaultError::EncryptionFailed(e.to_string()))?;
 
     let mut encrypted = vec![];
     let mut writer = encryptor
         .wrap_output(&mut encrypted)
-        .map_err(|e| RevaultError::EncryptionFailed(e.to_string()))?;
+        .map_err(|e| RevvaultError::EncryptionFailed(e.to_string()))?;
     writer
         .write_all(plaintext)
-        .map_err(|e| RevaultError::EncryptionFailed(e.to_string()))?;
+        .map_err(|e| RevvaultError::EncryptionFailed(e.to_string()))?;
     writer
         .finish()
-        .map_err(|e| RevaultError::EncryptionFailed(e.to_string()))?;
+        .map_err(|e| RevvaultError::EncryptionFailed(e.to_string()))?;
 
     Ok(encrypted)
 }
@@ -30,10 +30,10 @@ pub fn encrypt(plaintext: &[u8], recipients: &[x25519::Recipient]) -> Result<Vec
 /// Decrypt an age-encrypted blob using the provided identity.
 pub fn decrypt(ciphertext: &[u8], identity: &Identity) -> Result<SecretString> {
     let decryptor = age::Decryptor::new(ciphertext)
-        .map_err(|e| RevaultError::DecryptionFailed(e.to_string()))?;
+        .map_err(|e| RevvaultError::DecryptionFailed(e.to_string()))?;
 
     if decryptor.is_scrypt() {
-        return Err(RevaultError::DecryptionFailed(
+        return Err(RevvaultError::DecryptionFailed(
             "passphrase-encrypted files not supported".into(),
         ));
     }
@@ -46,13 +46,13 @@ pub fn decrypt(ciphertext: &[u8], identity: &Identity) -> Result<SecretString> {
                 .iter()
                 .map(|i| i as &dyn age::Identity),
         )
-        .map_err(|e: age::DecryptError| RevaultError::DecryptionFailed(e.to_string()))?;
+        .map_err(|e: age::DecryptError| RevvaultError::DecryptionFailed(e.to_string()))?;
     reader
         .read_to_end(&mut decrypted)
-        .map_err(|e: std::io::Error| RevaultError::DecryptionFailed(e.to_string()))?;
+        .map_err(|e: std::io::Error| RevvaultError::DecryptionFailed(e.to_string()))?;
 
     let plaintext = String::from_utf8(decrypted)
-        .map_err(|e| RevaultError::DecryptionFailed(e.to_string()))?;
+        .map_err(|e| RevvaultError::DecryptionFailed(e.to_string()))?;
 
     Ok(SecretString::from(plaintext))
 }
@@ -60,7 +60,7 @@ pub fn decrypt(ciphertext: &[u8], identity: &Identity) -> Result<SecretString> {
 /// Load recipients from a `.age-recipients` file.
 pub fn load_recipients(path: &std::path::Path) -> Result<Vec<x25519::Recipient>> {
     let contents = std::fs::read_to_string(path)
-        .map_err(|_| RevaultError::RecipientsNotFound(path.to_path_buf()))?;
+        .map_err(|_| RevvaultError::RecipientsNotFound(path.to_path_buf()))?;
 
     let recipients: Vec<x25519::Recipient> = contents
         .lines()
@@ -72,7 +72,7 @@ pub fn load_recipients(path: &std::path::Path) -> Result<Vec<x25519::Recipient>>
         .collect();
 
     if recipients.is_empty() {
-        return Err(RevaultError::RecipientsNotFound(path.to_path_buf()));
+        return Err(RevvaultError::RecipientsNotFound(path.to_path_buf()));
     }
 
     Ok(recipients)

@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/tauri.conf.json",
-  "productName": "Revault",
+  "productName": "Revvault",
   "version": "0.1.0",
-  "identifier": "dev.revealui.revault",
+  "identifier": "dev.revealui.revvault",
   "build": {
     "frontendDist": "../../frontend/dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Revault",
+        "title": "Revvault",
         "width": 1024,
         "height": 700,
         "resizable": true,

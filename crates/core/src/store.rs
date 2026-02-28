@@ -7,7 +7,7 @@ use walkdir::WalkDir;
 
 use crate::config::Config;
 use crate::crypto;
-use crate::error::{Result, RevaultError};
+use crate::error::{Result, RevvaultError};
 use crate::identity::Identity;
 use crate::namespace::Namespace;
 
@@ -47,7 +47,7 @@ impl PassageStore {
         validate_path(path)?;
         let file_path = self.resolve_path(path)?;
         let ciphertext = std::fs::read(&file_path)
-            .map_err(|_| RevaultError::SecretNotFound(path.to_string()))?;
+            .map_err(|_| RevvaultError::SecretNotFound(path.to_string()))?;
         crypto::decrypt(&ciphertext, &self.identity)
     }
 
@@ -57,7 +57,7 @@ impl PassageStore {
         let file_path = self.secret_file_path(path);
 
         if file_path.exists() {
-            return Err(RevaultError::SecretAlreadyExists(path.to_string()));
+            return Err(RevvaultError::SecretAlreadyExists(path.to_string()));
         }
 
         // Ensure parent directories exist
@@ -188,7 +188,7 @@ impl PassageStore {
         if file_path.exists() {
             Ok(file_path)
         } else {
-            Err(RevaultError::SecretNotFound(path.to_string()))
+            Err(RevvaultError::SecretNotFound(path.to_string()))
         }
     }
 
@@ -219,17 +219,17 @@ impl PassageStore {
 /// Validate a secret path to prevent directory traversal and other attacks.
 fn validate_path(path: &str) -> Result<()> {
     if path.is_empty() {
-        return Err(RevaultError::InvalidPath("path is empty".into()));
+        return Err(RevvaultError::InvalidPath("path is empty".into()));
     }
     if path.contains('\0') {
-        return Err(RevaultError::InvalidPath("path contains null byte".into()));
+        return Err(RevvaultError::InvalidPath("path contains null byte".into()));
     }
     if path.starts_with('/') || path.starts_with('\\') {
-        return Err(RevaultError::InvalidPath("path must be relative".into()));
+        return Err(RevvaultError::InvalidPath("path must be relative".into()));
     }
     for segment in path.split(['/', '\\']) {
         if segment == ".." || segment == "." {
-            return Err(RevaultError::InvalidPath(
+            return Err(RevvaultError::InvalidPath(
                 "path traversal not allowed".into(),
             ));
         }
@@ -289,7 +289,7 @@ mod tests {
 
         store.set("misc/token", b"value1").unwrap();
         let err = store.set("misc/token", b"value2").unwrap_err();
-        assert!(matches!(err, RevaultError::SecretAlreadyExists(_)));
+        assert!(matches!(err, RevvaultError::SecretAlreadyExists(_)));
     }
 
     #[test]
@@ -373,7 +373,7 @@ mod tests {
         // Secret should be gone
         assert!(matches!(
             store.get("deep/nested/secret").unwrap_err(),
-            RevaultError::SecretNotFound(_)
+            RevvaultError::SecretNotFound(_)
         ));
 
         // Empty parent directories should be cleaned up
@@ -388,7 +388,7 @@ mod tests {
         let (_dir, store) = setup_temp_store();
 
         let err = store.delete("does/not/exist").unwrap_err();
-        assert!(matches!(err, RevaultError::SecretNotFound(_)));
+        assert!(matches!(err, RevvaultError::SecretNotFound(_)));
     }
 
     #[test]
@@ -396,14 +396,14 @@ mod tests {
         let (_dir, store) = setup_temp_store();
 
         let err = store.get("no/such/secret").unwrap_err();
-        assert!(matches!(err, RevaultError::SecretNotFound(_)));
+        assert!(matches!(err, RevvaultError::SecretNotFound(_)));
     }
 
     #[test]
     fn validate_rejects_empty_path() {
         assert!(matches!(
             validate_path(""),
-            Err(RevaultError::InvalidPath(_))
+            Err(RevvaultError::InvalidPath(_))
         ));
     }
 
@@ -411,7 +411,7 @@ mod tests {
     fn validate_rejects_absolute_path() {
         assert!(matches!(
             validate_path("/etc/passwd"),
-            Err(RevaultError::InvalidPath(_))
+            Err(RevvaultError::InvalidPath(_))
         ));
     }
 
@@ -419,15 +419,15 @@ mod tests {
     fn validate_rejects_traversal() {
         assert!(matches!(
             validate_path("../../etc/passwd"),
-            Err(RevaultError::InvalidPath(_))
+            Err(RevvaultError::InvalidPath(_))
         ));
         assert!(matches!(
             validate_path("foo/../../../etc/shadow"),
-            Err(RevaultError::InvalidPath(_))
+            Err(RevvaultError::InvalidPath(_))
         ));
         assert!(matches!(
             validate_path("./hidden"),
-            Err(RevaultError::InvalidPath(_))
+            Err(RevvaultError::InvalidPath(_))
         ));
     }
 
@@ -435,7 +435,7 @@ mod tests {
     fn validate_rejects_null_bytes() {
         assert!(matches!(
             validate_path("foo\0bar"),
-            Err(RevaultError::InvalidPath(_))
+            Err(RevvaultError::InvalidPath(_))
         ));
     }
 
@@ -443,7 +443,7 @@ mod tests {
     fn validate_rejects_backslash_traversal() {
         assert!(matches!(
             validate_path("foo\\..\\..\\etc\\passwd"),
-            Err(RevaultError::InvalidPath(_))
+            Err(RevvaultError::InvalidPath(_))
         ));
     }
 
@@ -460,7 +460,7 @@ mod tests {
         let (_dir, store) = setup_temp_store();
         assert!(matches!(
             store.set("../../etc/passwd", b"hacked"),
-            Err(RevaultError::InvalidPath(_))
+            Err(RevvaultError::InvalidPath(_))
         ));
     }
 
@@ -469,7 +469,7 @@ mod tests {
         let (_dir, store) = setup_temp_store();
         assert!(matches!(
             store.get("../../../etc/shadow"),
-            Err(RevaultError::InvalidPath(_))
+            Err(RevvaultError::InvalidPath(_))
         ));
     }
 

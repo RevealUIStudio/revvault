@@ -9,5 +9,5 @@ pub struct CompletionsArgs {
 
 pub fn run(args: CompletionsArgs) {
     let mut cmd = crate::Cli::command();
-    generate(args.shell, &mut cmd, "revault", &mut std::io::stdout());
+    generate(args.shell, &mut cmd, "revvault", &mut std::io::stdout());
 }

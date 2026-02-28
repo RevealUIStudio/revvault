@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use crate::error::{Result, RevaultError};
+use crate::error::{Result, RevvaultError};
 
 /// Cross-platform configuration for store and identity paths.
 pub struct Config {
@@ -14,12 +14,12 @@ impl Config {
     /// Resolve configuration from environment and platform defaults.
     ///
     /// Store resolution order:
-    ///   1. `REVAULT_STORE` env var
+    ///   1. `REVVAULT_STORE` env var
     ///   2. `PASSAGE_DIR` env var (backwards compat)
     ///   3. `~/.revealui/passage-store`
     ///
     /// Identity resolution order:
-    ///   1. `REVAULT_IDENTITY` env var
+    ///   1. `REVVAULT_IDENTITY` env var
     ///   2. `~/.age-identity/keys.txt`
     pub fn resolve() -> Result<Self> {
         let store_dir = Self::resolve_store_dir()?;
@@ -34,7 +34,7 @@ impl Config {
     }
 
     fn resolve_store_dir() -> Result<PathBuf> {
-        if let Ok(path) = env::var("REVAULT_STORE") {
+        if let Ok(path) = env::var("REVVAULT_STORE") {
             let p = PathBuf::from(path);
             if p.is_dir() {
                 return Ok(p);
@@ -70,7 +70,7 @@ impl Config {
             }
         }
 
-        Err(RevaultError::StoreNotFound(
+        Err(RevvaultError::StoreNotFound(
             candidates
                 .first()
                 .cloned()
@@ -79,7 +79,7 @@ impl Config {
     }
 
     fn resolve_identity_file() -> Result<PathBuf> {
-        if let Ok(path) = env::var("REVAULT_IDENTITY") {
+        if let Ok(path) = env::var("REVVAULT_IDENTITY") {
             let p = PathBuf::from(path);
             if p.is_file() {
                 return Ok(p);
@@ -106,7 +106,7 @@ impl Config {
             }
         }
 
-        Err(RevaultError::IdentityNotFound(
+        Err(RevvaultError::IdentityNotFound(
             candidates
                 .first()
                 .cloned()
@@ -117,7 +117,7 @@ impl Config {
 
 fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| {
-        RevaultError::Io(std::io::Error::new(
+        RevvaultError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "could not determine home directory",
         ))
@@ -141,8 +141,8 @@ mod tests {
         std::fs::write(&recip_file, "age1fake\n").unwrap();
 
         unsafe {
-            env::set_var("REVAULT_STORE", &store);
-            env::set_var("REVAULT_IDENTITY", &id_file);
+            env::set_var("REVVAULT_STORE", &store);
+            env::set_var("REVVAULT_IDENTITY", &id_file);
         }
 
         let config = Config::resolve().unwrap();
@@ -150,8 +150,8 @@ mod tests {
         assert_eq!(config.identity_file, id_file);
 
         unsafe {
-            env::remove_var("REVAULT_STORE");
-            env::remove_var("REVAULT_IDENTITY");
+            env::remove_var("REVVAULT_STORE");
+            env::remove_var("REVVAULT_IDENTITY");
         }
     }
 }

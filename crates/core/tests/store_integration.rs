@@ -1,9 +1,9 @@
 use age::x25519;
 use secrecy::ExposeSecret;
 
-use revault_core::config::Config;
-use revault_core::namespace::Namespace;
-use revault_core::store::PassageStore;
+use revvault_core::config::Config;
+use revvault_core::namespace::Namespace;
+use revvault_core::store::PassageStore;
 
 /// Create a temp store with generated identity and recipients.
 fn setup_store() -> (tempfile::TempDir, PassageStore) {
@@ -156,12 +156,12 @@ fn path_traversal_blocked() {
 }
 
 /// Validate against real passage-store (opt-in via --ignored).
-/// Run with: REVAULT_STORE=~/.revealui/passage-store REVAULT_IDENTITY=~/.age-identity/keys.txt cargo test -p revault-core -- --ignored
+/// Run with: REVVAULT_STORE=~/.revealui/passage-store REVVAULT_IDENTITY=~/.age-identity/keys.txt cargo test -p revvault-core -- --ignored
 #[test]
 #[ignore]
 fn real_store_list_and_decrypt() {
     let config = Config::resolve().expect(
-        "set REVAULT_STORE and REVAULT_IDENTITY env vars to point at your real passage-store",
+        "set REVVAULT_STORE and REVVAULT_IDENTITY env vars to point at your real passage-store",
     );
     let store = PassageStore::open(config).unwrap();
 

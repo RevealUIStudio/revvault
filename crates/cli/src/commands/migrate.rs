@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use clap::Args;
 
-use revault_core::import::PlaintextImporter;
-use revault_core::Config;
-use revault_core::PassageStore;
+use revvault_core::import::PlaintextImporter;
+use revvault_core::Config;
+use revvault_core::PassageStore;
 
 #[derive(Args)]
 pub struct MigrateArgs {
@@ -64,7 +64,7 @@ pub fn run(args: MigrateArgs) -> anyhow::Result<()> {
     let manifest = importer.execute(&store, &records)?;
 
     // Write manifest
-    let manifest_dir = store.store_dir().join(".revault/migrations");
+    let manifest_dir = store.store_dir().join(".revvault/migrations");
     std::fs::create_dir_all(&manifest_dir)?;
     let manifest_path = manifest_dir.join(format!("{}.json", manifest.timestamp.replace(':', "-")));
     let manifest_json = serde_json::to_string_pretty(&manifest)?;

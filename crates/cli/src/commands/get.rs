@@ -1,20 +1,18 @@
 use std::io::{self, Write};
-use std::thread;
-use std::time::Duration;
 
 use arboard::Clipboard;
 use clap::Args;
 use secrecy::ExposeSecret;
 
-use revault_core::Config;
-use revault_core::PassageStore;
+use revvault_core::Config;
+use revvault_core::PassageStore;
 
 #[derive(Args)]
 pub struct GetArgs {
     /// Secret path (e.g., "credentials/stripe/secret-key")
     pub path: String,
 
-    /// Copy to clipboard (auto-clears after 45 seconds)
+    /// Copy to clipboard instead of printing
     #[arg(short, long)]
     pub clip: bool,
 
@@ -32,14 +30,7 @@ pub fn run(args: GetArgs) -> anyhow::Result<()> {
     if args.clip {
         let mut clipboard = Clipboard::new()?;
         clipboard.set_text(value)?;
-        eprintln!("Copied to clipboard. Clearing in 45 seconds.");
-
-        thread::spawn(move || {
-            thread::sleep(Duration::from_secs(45));
-            if let Ok(mut cb) = Clipboard::new() {
-                let _ = cb.set_text("");
-            }
-        });
+        eprintln!("Copied to clipboard. Remember to clear it when done.");
     } else if args.full {
         let stdout = io::stdout();
         let mut handle = stdout.lock();

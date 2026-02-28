@@ -5,7 +5,7 @@ interface SearchBarProps {
 
 export function SearchBar({ query, onSearch }: SearchBarProps) {
   return (
-    <div className="border-b border-neutral-800 bg-neutral-900 px-4 py-3">
+    <div className="bg-neutral-900 px-4 py-3">
       <input
         type="text"
         value={query}
