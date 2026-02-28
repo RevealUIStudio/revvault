@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use assert_cmd::Command;
 use predicates::prelude::*;
 use secrecy::ExposeSecret;
@@ -35,7 +33,7 @@ fn setup_temp_store() -> (TempDir, String, String) {
 }
 
 fn revvault_cmd(store: &str, identity: &str) -> Command {
-    let mut cmd = Command::cargo_bin("revvault").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("revvault");
     cmd.env("REVVAULT_STORE", store);
     cmd.env("REVVAULT_IDENTITY", identity);
     cmd
@@ -146,9 +144,10 @@ fn delete_removes_secret() {
         .assert()
         .success();
 
-    // Delete it
+    // Delete it (--force skips confirmation prompt)
     revvault_cmd(&store, &identity)
         .arg("delete")
+        .arg("--force")
         .arg("misc/temp")
         .assert()
         .success();
