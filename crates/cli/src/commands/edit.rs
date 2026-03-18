@@ -8,6 +8,8 @@ use zeroize::Zeroize;
 use revvault_core::Config;
 use revvault_core::PassageStore;
 
+use crate::tui_editor;
+
 #[derive(Args)]
 pub struct EditArgs {
     /// Secret path to edit
@@ -30,25 +32,41 @@ pub fn run(args: EditArgs) -> anyhow::Result<()> {
     };
 
     let store = PassageStore::open(config)?;
-
-    // Decrypt current value
     let secret = store.get(&args.path)?;
     let current = secret.expose_secret().to_string();
 
-    // Write plaintext to the most secure temp location available, then open editor.
-    let (tmp_path, tmp_fd) = secure_tmp(&tmp_config, &current)?;
-
-    // Open in editor — split the editor string so "zed --wait" works correctly.
+    // Determine which editor to use.
     let editor_cmd = editor_field
         .or_else(|| std::env::var("EDITOR").ok())
-        .unwrap_or_else(|| "vi".into());
+        .unwrap_or_else(|| "builtin".into());
+
+    if editor_cmd == "builtin" {
+        // Built-in TUI editor — no temp file needed.
+        match tui_editor::edit(&args.path, &current)? {
+            None => {
+                eprintln!("No changes made.");
+            }
+            Some(new_content) => {
+                let trimmed = new_content.trim().to_string();
+                if trimmed == current.trim() {
+                    eprintln!("No changes made.");
+                } else {
+                    store.upsert(&args.path, trimmed.as_bytes())?;
+                    eprintln!("Updated: {}", args.path);
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // External editor path: write decrypted content to a secure temp file.
+    let (tmp_path, tmp_fd) = secure_tmp(&tmp_config, &current)?;
 
     let parts: Vec<&str> = editor_cmd.split_whitespace().collect();
     let (bin, extra_args) = parts
         .split_first()
         .ok_or_else(|| anyhow::anyhow!("EDITOR is empty"))?;
 
-    // Resolve the binary via PATH so editors installed in Nix/system paths are found.
     let bin_path = which::which(bin)
         .map(|p| p.into_os_string())
         .unwrap_or_else(|_| std::ffi::OsString::from(*bin));

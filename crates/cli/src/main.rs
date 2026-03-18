@@ -1,4 +1,5 @@
 mod commands;
+pub mod tui_editor;
 
 use clap::{Parser, Subcommand};
 

@@ -12,7 +12,7 @@ struct ConfigFile {
     store_path: Option<PathBuf>,
     /// Override default identity file path.
     identity: Option<PathBuf>,
-    /// Editor command used by the edit command (e.g. `"zed --wait"`).
+    /// Editor command, or "builtin" to use the built-in TUI editor.
     editor: Option<String>,
     /// Directory for temporary plaintext files during edit.
     tmpdir: Option<PathBuf>,
@@ -47,7 +47,7 @@ pub struct Config {
     pub store_dir: PathBuf,
     pub identity_file: PathBuf,
     pub recipients_file: PathBuf,
-    /// Editor command string (may include arguments, e.g. `"zed --wait"`).
+    /// Editor command, or "builtin" to use the built-in TUI editor (may include arguments, e.g. `"zed --wait"`).
     pub editor: Option<String>,
     /// Directory for temporary plaintext files during edit.
     pub tmpdir: Option<PathBuf>,
