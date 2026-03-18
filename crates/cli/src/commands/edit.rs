@@ -111,7 +111,7 @@ fn secure_tmp(
                     use std::os::unix::io::AsRawFd;
                     mfd.as_raw_fd()
                 };
-                let proc_path = PathBuf::from(format!("/proc/self/fd/{fd_num}"));
+                let proc_path = PathBuf::from(format!("/proc/{}/fd/{fd_num}", std::process::id()));
                 return Ok((proc_path, Some(mfd)));
             }
             Err(_) => {
