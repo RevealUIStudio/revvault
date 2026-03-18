@@ -1,4 +1,3 @@
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -49,7 +48,12 @@ pub fn run(args: EditArgs) -> anyhow::Result<()> {
         .split_first()
         .ok_or_else(|| anyhow::anyhow!("EDITOR is empty"))?;
 
-    let status = Command::new(bin)
+    // Resolve the binary via PATH so editors installed in Nix/system paths are found.
+    let bin_path = which::which(bin)
+        .map(|p| p.into_os_string())
+        .unwrap_or_else(|_| std::ffi::OsString::from(*bin));
+
+    let status = Command::new(&bin_path)
         .args(extra_args)
         .arg(&tmp_path)
         .status()?;
@@ -93,34 +97,9 @@ fn secure_tmp(
     config: &TmpConfig,
     content: &str,
 ) -> anyhow::Result<(PathBuf, Option<memfd::Memfd>)> {
-    // --- Strategy 1: memfd_create (Linux only, no disk write at all) ---
-    #[cfg(target_os = "linux")]
-    {
-        use memfd::MemfdOptions;
-        match MemfdOptions::default()
-            .allow_sealing(false)
-            .close_on_exec(true)
-            .create("revvault-edit")
-        {
-            Ok(mfd) => {
-                // Write plaintext into the anonymous in-memory file
-                let mut f = mfd.as_file();
-                f.write_all(content.as_bytes())?;
-                // Build the /proc path that editors can open as a regular file
-                let fd_num = {
-                    use std::os::unix::io::AsRawFd;
-                    mfd.as_raw_fd()
-                };
-                let proc_path = PathBuf::from(format!("/proc/{}/fd/{fd_num}", std::process::id()));
-                return Ok((proc_path, Some(mfd)));
-            }
-            Err(_) => {
-                // Fall through to next strategy
-            }
-        }
-    }
-
-    // --- Strategy 2: /dev/shm tmpfs (Linux / WSL2) ---
+    // --- Strategy 1: /dev/shm tmpfs (Linux / WSL2) ---
+    // Preferred over memfd because GUI editors (Zed, VS Code) use atomic
+    // temp-rename saves that require a real filesystem path.
     #[cfg(target_os = "linux")]
     {
         use nix::sys::statfs::statfs;
@@ -135,6 +114,32 @@ fn secure_tmp(
                 std::mem::forget(shm_tmp);
                 return Ok((path, None));
             }
+        }
+    }
+
+    // --- Strategy 2: memfd_create (Linux, terminal editors only) ---
+    // Only works with editors that do direct write() without temp-rename.
+    // Kept as fallback when /dev/shm is unavailable.
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write as _;
+        use memfd::MemfdOptions;
+        match MemfdOptions::default()
+            .allow_sealing(false)
+            .close_on_exec(false)
+            .create("revvault-edit")
+        {
+            Ok(mfd) => {
+                let mut f = mfd.as_file();
+                f.write_all(content.as_bytes())?;
+                let fd_num = {
+                    use std::os::unix::io::AsRawFd;
+                    mfd.as_raw_fd()
+                };
+                let proc_path = PathBuf::from(format!("/proc/{}/fd/{fd_num}", std::process::id()));
+                return Ok((proc_path, Some(mfd)));
+            }
+            Err(_) => {}
         }
     }
 
