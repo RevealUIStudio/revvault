@@ -1,39 +1,109 @@
 use std::env;
 use std::path::PathBuf;
 
+use serde::Deserialize;
+
 use crate::error::{Result, RevvaultError};
 
-/// Cross-platform configuration for store and identity paths.
+/// Optional config file at `~/.config/revvault/config.toml`.
+#[derive(Debug, Default, Deserialize)]
+struct ConfigFile {
+    /// Override default store path.
+    store_path: Option<PathBuf>,
+    /// Override default identity file path.
+    identity: Option<PathBuf>,
+    /// Editor command used by the edit command (e.g. `"zed --wait"`).
+    editor: Option<String>,
+    /// Directory for temporary plaintext files during edit.
+    tmpdir: Option<PathBuf>,
+}
+
+impl ConfigFile {
+    /// Load `~/.config/revvault/config.toml`.
+    ///
+    /// Returns `Default::default()` silently if the file does not exist.
+    /// Returns an error if the file exists but cannot be parsed.
+    fn load() -> Result<Self> {
+        let Some(home) = dirs::home_dir() else {
+            return Ok(Self::default());
+        };
+        let path = home.join(".config/revvault/config.toml");
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let raw = std::fs::read_to_string(&path).map_err(RevvaultError::Io)?;
+        toml::from_str(&raw).map_err(|e| {
+            RevvaultError::Other(anyhow::anyhow!(
+                "malformed config file {}: {e}",
+                path.display()
+            ))
+        })
+    }
+}
+
+/// Cross-platform configuration for store, identity, editor, and tmpdir.
+#[derive(Clone)]
 pub struct Config {
     pub store_dir: PathBuf,
     pub identity_file: PathBuf,
     pub recipients_file: PathBuf,
+    /// Editor command string (may include arguments, e.g. `"zed --wait"`).
+    pub editor: Option<String>,
+    /// Directory for temporary plaintext files during edit.
+    pub tmpdir: Option<PathBuf>,
 }
 
 impl Config {
-    /// Resolve configuration from environment and platform defaults.
+    /// Resolve configuration from config file, environment, and platform defaults.
     ///
-    /// Store resolution order:
-    ///   1. `REVVAULT_STORE` env var
-    ///   2. `PASSAGE_DIR` env var (backwards compat)
-    ///   3. `~/.revealui/passage-store`
+    /// Resolution order (later overrides earlier):
+    ///   config file → env var → platform default
     ///
-    /// Identity resolution order:
-    ///   1. `REVVAULT_IDENTITY` env var
-    ///   2. `~/.age-identity/keys.txt`
+    /// Store:
+    ///   1. `~/.config/revvault/config.toml` `store_path`
+    ///   2. `REVVAULT_STORE` env var
+    ///   3. `PASSAGE_DIR` env var (backwards compat)
+    ///   4. `~/.revealui/passage-store`
+    ///
+    /// Identity:
+    ///   1. `~/.config/revvault/config.toml` `identity`
+    ///   2. `REVVAULT_IDENTITY` env var
+    ///   3. `~/.config/age/keys.txt`
+    ///   4. `~/.age-identity/keys.txt`
+    ///
+    /// Editor:
+    ///   1. `~/.config/revvault/config.toml` `editor`
+    ///   2. `EDITOR` env var
+    ///
+    /// Tmpdir:
+    ///   1. `~/.config/revvault/config.toml` `tmpdir`
+    ///   2. `TMPDIR` env var
     pub fn resolve() -> Result<Self> {
-        let store_dir = Self::resolve_store_dir()?;
-        let identity_file = Self::resolve_identity_file()?;
+        let file = ConfigFile::load()?;
+        let store_dir = Self::resolve_store_dir(&file)?;
+        let identity_file = Self::resolve_identity_file(&file)?;
         let recipients_file = store_dir.join(".age-recipients");
+        let editor = Self::resolve_editor(&file);
+        let tmpdir = Self::resolve_tmpdir(&file);
 
         Ok(Self {
             store_dir,
             identity_file,
             recipients_file,
+            editor,
+            tmpdir,
         })
     }
 
-    fn resolve_store_dir() -> Result<PathBuf> {
+    fn resolve_store_dir(file: &ConfigFile) -> Result<PathBuf> {
+        // Config file wins first (only if path exists)
+        if let Some(ref p) = file.store_path {
+            if p.is_dir() {
+                return Ok(p.clone());
+            }
+        }
+
+        // Env vars next
         if let Ok(path) = env::var("REVVAULT_STORE") {
             let p = PathBuf::from(path);
             if p.is_dir() {
@@ -51,7 +121,6 @@ impl Config {
         // Platform-aware default
         let home = home_dir()?;
 
-        // On WSL, check /mnt/c path if we're under Linux
         let candidates = if cfg!(target_os = "linux") {
             let win_user = env::var("WINDOWS_USERNAME").unwrap_or_else(|_| "joshu".into());
             vec![
@@ -78,7 +147,15 @@ impl Config {
         ))
     }
 
-    fn resolve_identity_file() -> Result<PathBuf> {
+    fn resolve_identity_file(file: &ConfigFile) -> Result<PathBuf> {
+        // Config file wins first (only if file exists)
+        if let Some(ref p) = file.identity {
+            if p.is_file() {
+                return Ok(p.clone());
+            }
+        }
+
+        // Env var next
         if let Ok(path) = env::var("REVVAULT_IDENTITY") {
             let p = PathBuf::from(path);
             if p.is_file() {
@@ -91,13 +168,17 @@ impl Config {
         let candidates = if cfg!(target_os = "linux") {
             let win_user = env::var("WINDOWS_USERNAME").unwrap_or_else(|_| "joshu".into());
             vec![
-                home.join(".age-identity/keys.txt"),
+                home.join(".config/age/keys.txt"),  // XDG standard location (checked first)
+                home.join(".age-identity/keys.txt"), // legacy location
                 PathBuf::from("/mnt/c/Users")
                     .join(&win_user)
                     .join(".age-identity/keys.txt"),
             ]
         } else {
-            vec![home.join(".age-identity/keys.txt")]
+            vec![
+                home.join(".config/age/keys.txt"),
+                home.join(".age-identity/keys.txt"),
+            ]
         };
 
         for candidate in &candidates {
@@ -110,8 +191,26 @@ impl Config {
             candidates
                 .first()
                 .cloned()
-                .unwrap_or_else(|| PathBuf::from("~/.age-identity/keys.txt")),
+                .unwrap_or_else(|| PathBuf::from("~/.config/age/keys.txt")),
         ))
+    }
+
+    fn resolve_editor(file: &ConfigFile) -> Option<String> {
+        // Config file wins, then EDITOR env var
+        if let Some(ref e) = file.editor {
+            if !e.trim().is_empty() {
+                return Some(e.clone());
+            }
+        }
+        env::var("EDITOR").ok()
+    }
+
+    fn resolve_tmpdir(file: &ConfigFile) -> Option<PathBuf> {
+        // Config file wins, then TMPDIR env var
+        if let Some(ref p) = file.tmpdir {
+            return Some(p.clone());
+        }
+        env::var("TMPDIR").ok().map(PathBuf::from)
     }
 }
 

@@ -1,8 +1,10 @@
-use std::env;
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::process::Command;
 
 use clap::Args;
 use secrecy::ExposeSecret;
+use zeroize::Zeroize;
 
 use revvault_core::Config;
 use revvault_core::PassageStore;
@@ -13,29 +15,60 @@ pub struct EditArgs {
     pub path: String,
 }
 
+/// Minimal struct carrying only what `secure_tmp` needs, so we do not have to
+/// clone the full `Config` (which is consumed by `PassageStore::open`).
+struct TmpConfig {
+    tmpdir: Option<PathBuf>,
+}
+
 pub fn run(args: EditArgs) -> anyhow::Result<()> {
     let config = Config::resolve()?;
+
+    // Extract fields we need before config is consumed by PassageStore::open.
+    let editor_field = config.editor.clone();
+    let tmp_config = TmpConfig {
+        tmpdir: config.tmpdir.clone(),
+    };
+
     let store = PassageStore::open(config)?;
 
     // Decrypt current value
     let secret = store.get(&args.path)?;
     let current = secret.expose_secret().to_string();
 
-    // Write to temp file
-    let tmp = tempfile::NamedTempFile::new()?;
-    std::fs::write(tmp.path(), &current)?;
+    // Write plaintext to the most secure temp location available, then open editor.
+    let (tmp_path, tmp_fd) = secure_tmp(&tmp_config, &current)?;
 
-    // Open in editor
-    let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".into());
-    let status = Command::new(&editor).arg(tmp.path()).status()?;
+    // Open in editor — split the editor string so "zed --wait" works correctly.
+    let editor_cmd = editor_field
+        .or_else(|| std::env::var("EDITOR").ok())
+        .unwrap_or_else(|| "vi".into());
+
+    let parts: Vec<&str> = editor_cmd.split_whitespace().collect();
+    let (bin, extra_args) = parts
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("EDITOR is empty"))?;
+
+    let status = Command::new(bin)
+        .args(extra_args)
+        .arg(&tmp_path)
+        .status()?;
 
     if !status.success() {
+        cleanup_tmp(tmp_fd, &tmp_path);
         anyhow::bail!("editor exited with non-zero status");
     }
 
     // Read back and re-encrypt
-    let new_value = std::fs::read_to_string(tmp.path())?;
-    let trimmed = new_value.trim();
+    let new_value = std::fs::read_to_string(&tmp_path)?;
+    let trimmed = new_value.trim().to_string();
+
+    // Zero out the temp file contents on disk before removal
+    cleanup_tmp(tmp_fd, &tmp_path);
+
+    // Zero out the in-memory copy of the original plaintext
+    let mut plain = current.clone();
+    plain.zeroize();
 
     if trimmed == current.trim() {
         eprintln!("No changes made.");
@@ -46,4 +79,107 @@ pub fn run(args: EditArgs) -> anyhow::Result<()> {
     eprintln!("Updated: {}", args.path);
 
     Ok(())
+}
+
+/// Returns `(path_for_editor, optional_memfd_owner)`.
+///
+/// Priority:
+///   1. Linux: `memfd_create` — anonymous in-memory file at `/proc/self/fd/<n>`
+///   2. Linux/WSL2: `/dev/shm` if it is a tmpfs mount
+///   3. macOS: `NamedTempFile` with `F_NOCACHE`
+///   4. `config.tmpdir` / `TMPDIR` / OS default tempdir
+#[allow(unused_variables)]
+fn secure_tmp(
+    config: &TmpConfig,
+    content: &str,
+) -> anyhow::Result<(PathBuf, Option<memfd::Memfd>)> {
+    // --- Strategy 1: memfd_create (Linux only, no disk write at all) ---
+    #[cfg(target_os = "linux")]
+    {
+        use memfd::MemfdOptions;
+        match MemfdOptions::default()
+            .allow_sealing(false)
+            .close_on_exec(true)
+            .create("revvault-edit")
+        {
+            Ok(mfd) => {
+                // Write plaintext into the anonymous in-memory file
+                let mut f = mfd.as_file();
+                f.write_all(content.as_bytes())?;
+                // Build the /proc path that editors can open as a regular file
+                let fd_num = {
+                    use std::os::unix::io::AsRawFd;
+                    mfd.as_raw_fd()
+                };
+                let proc_path = PathBuf::from(format!("/proc/self/fd/{fd_num}"));
+                return Ok((proc_path, Some(mfd)));
+            }
+            Err(_) => {
+                // Fall through to next strategy
+            }
+        }
+    }
+
+    // --- Strategy 2: /dev/shm tmpfs (Linux / WSL2) ---
+    #[cfg(target_os = "linux")]
+    {
+        use nix::sys::statfs::statfs;
+        // TMPFS_MAGIC = 0x01021994
+        const TMPFS_MAGIC: i64 = 0x0102_1994_u32 as i64;
+        if let Ok(st) = statfs("/dev/shm") {
+            if st.filesystem_type().0 == TMPFS_MAGIC {
+                let shm_tmp = tempfile::NamedTempFile::new_in("/dev/shm")?;
+                std::fs::write(shm_tmp.path(), content)?;
+                let path = shm_tmp.path().to_path_buf();
+                // Forget the handle — cleanup_tmp will overwrite + unlink
+                std::mem::forget(shm_tmp);
+                return Ok((path, None));
+            }
+        }
+    }
+
+    // --- Strategy 3: macOS — disable OS caching ---
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let tmp = tempfile::NamedTempFile::new_in(std::env::temp_dir())?;
+        // Disable OS-level read/write caching for this fd
+        unsafe {
+            libc::fcntl(tmp.as_file().as_raw_fd(), libc::F_NOCACHE, 1i32);
+        }
+        std::fs::write(tmp.path(), content)?;
+        let path = tmp.path().to_path_buf();
+        std::mem::forget(tmp);
+        return Ok((path, None));
+    }
+
+    // --- Strategy 4: config.tmpdir / TMPDIR / OS default ---
+    #[allow(unreachable_code)]
+    {
+        let base_dir = config
+            .tmpdir
+            .clone()
+            .or_else(|| std::env::var("TMPDIR").ok().map(PathBuf::from))
+            .unwrap_or_else(std::env::temp_dir);
+        let tmp = tempfile::NamedTempFile::new_in(&base_dir)?;
+        std::fs::write(tmp.path(), content)?;
+        let path = tmp.path().to_path_buf();
+        std::mem::forget(tmp);
+        Ok((path, None))
+    }
+}
+
+/// Overwrite the temp file with zeros then remove it.
+///
+/// For a `memfd`, the kernel reclaims the memory when the last fd is closed
+/// (i.e., when `mfd` is dropped here).
+fn cleanup_tmp(mfd: Option<memfd::Memfd>, path: &std::path::Path) {
+    if mfd.is_none() && path.exists() {
+        if let Ok(meta) = std::fs::metadata(path) {
+            let zeros = vec![0u8; meta.len() as usize];
+            let _ = std::fs::write(path, &zeros);
+        }
+        let _ = std::fs::remove_file(path);
+    }
+    drop(mfd);
 }
