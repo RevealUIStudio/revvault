@@ -100,7 +100,7 @@ pub fn edit(secret_path: &str, content: &str) -> anyhow::Result<Option<String>> 
             let footer_text = if pending_quit {
                 "  Unsaved changes. Press Ctrl+Q again to discard, or any other key to continue."
             } else {
-                "  Ctrl+S save   Ctrl+Q quit   Ctrl+Z undo   Ctrl+Y redo"
+                "  F2 save   Ctrl+Q quit   Ctrl+Z undo   Ctrl+Y redo"
             };
             let footer = Paragraph::new(footer_text).style(
                 Style::new()
@@ -114,12 +114,21 @@ pub fn edit(secret_path: &str, content: &str) -> anyhow::Result<Option<String>> 
         let ev = event::read()?;
 
         match &ev {
+            // F2 → save (primary: works in all terminals including Zed)
+            Event::Key(KeyEvent {
+                code: KeyCode::F(2),
+                ..
+            }) => {
+                let new_content = textarea.lines().join("\n");
+                return Ok(Some(new_content));
+            }
+
+            // Ctrl+S → save (secondary: works in terminals that don't intercept it)
             Event::Key(KeyEvent {
                 code: KeyCode::Char('s'),
                 modifiers,
                 ..
             }) if modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+S → save
                 let new_content = textarea.lines().join("\n");
                 return Ok(Some(new_content));
             }
