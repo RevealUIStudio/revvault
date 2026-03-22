@@ -3951,6 +3951,7 @@ dependencies = [
  "crossterm",
  "libc",
  "memfd",
+ "mockito",
  "nix",
  "predicates",
  "ratatui",

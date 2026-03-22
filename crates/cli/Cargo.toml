@@ -35,3 +35,5 @@ predicates = "3"
 tempfile = "3"
 age = { workspace = true }
 secrecy = { workspace = true }
+mockito = "1"
+tokio = { workspace = true }
