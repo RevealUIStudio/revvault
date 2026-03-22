@@ -19,8 +19,11 @@ fuzzy-matcher = { workspace = true }
 secrecy = { workspace = true }
 chrono = { workspace = true }
 toml = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
 age = { workspace = true }
 secrecy = { workspace = true }
+mockito = "1"
+tokio = { workspace = true }

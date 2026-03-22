@@ -1,14 +1,15 @@
 use clap::Args;
 
-use revvault_core::rotation::RotationConfig;
+use revvault_core::rotation::{executor, RotationConfig};
+use revvault_core::store::PassageStore;
 use revvault_core::Config;
 
 #[derive(Args)]
 pub struct RotateArgs {
-    /// Provider name (stripe, vercel, neon)
+    /// Provider name matching a `[providers.<name>]` block in rotation.toml
     pub provider: String,
 
-    /// Preview only, don't rotate
+    /// Preview the rotation steps without touching the vault or any API
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -17,31 +18,33 @@ pub async fn run(args: RotateArgs) -> anyhow::Result<()> {
     let config = Config::resolve()?;
     let rotation_config = RotationConfig::load(&config.store_dir)?;
 
-    let _provider_config = rotation_config
+    let provider_config = rotation_config
         .providers
         .get(&args.provider)
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "provider '{}' not found in rotation.toml. Available: {:?}",
-                args.provider,
-                rotation_config.providers.keys().collect::<Vec<_>>()
-            )
+            let known: Vec<&str> = rotation_config.providers.keys().map(String::as_str).collect();
+            if known.is_empty() {
+                anyhow::anyhow!(
+                    "provider '{}' not found — create {} to configure providers",
+                    args.provider,
+                    config.store_dir.join(".revvault/rotation.toml").display()
+                )
+            } else {
+                anyhow::anyhow!(
+                    "provider '{}' not found in rotation.toml — known: {}",
+                    args.provider,
+                    known.join(", ")
+                )
+            }
         })?;
 
-    if args.dry_run {
-        eprintln!(
-            "[dry run] Would rotate '{}' provider secrets",
-            args.provider
-        );
-        return Ok(());
-    }
+    let store = PassageStore::open(config)?;
 
-    // Provider implementations will be added in Phase 6
-    eprintln!(
-        "Rotation for '{}' not yet implemented. Use --dry-run to preview.",
-        args.provider
-    );
-    Ok(())
+    if args.dry_run {
+        executor::dry_run(&store, &args.provider, provider_config).await
+    } else {
+        executor::execute(&store, &args.provider, provider_config).await
+    }
 }
 
 pub fn status() -> anyhow::Result<()> {
