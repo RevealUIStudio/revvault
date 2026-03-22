@@ -8,6 +8,7 @@ pub mod crypto;
 pub mod error;
 pub mod identity;
 pub mod import;
+pub mod init;
 pub mod namespace;
 pub mod rotation;
 pub mod store;

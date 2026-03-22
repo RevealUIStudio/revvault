@@ -2,12 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { SecretInfo } from "./types";
 import { SearchBar } from "./components/SearchBar";
+import { SetupScreen } from "./components/SetupScreen";
 import { Sidebar } from "./components/Sidebar";
 import { SecretList } from "./components/SecretList";
 import { SecretDetail } from "./components/SecretDetail";
 import { CreateSecretDialog } from "./components/CreateSecretDialog";
 
 export default function App() {
+  const [ready, setReady] = useState(false);
+  const [needsSetup, setNeedsSetup] = useState(false);
   const [secrets, setSecrets] = useState<SecretInfo[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -27,17 +30,35 @@ export default function App() {
     }
   }, [activeNamespace]);
 
-  useEffect(() => {
-    invoke("init_store")
-      .then(() => loadSecrets())
-      .catch((e) => setError(String(e)));
-  }, [loadSecrets]);
+  async function initStore() {
+    try {
+      await invoke("init_store");
+      setReady(true);
+      setNeedsSetup(false);
+      loadSecrets();
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes("not found")) {
+        setNeedsSetup(true);
+      } else {
+        setError(msg);
+      }
+    }
+  }
 
   useEffect(() => {
-    if (!searchQuery) {
+    initStore();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (needsSetup) {
+    return <SetupScreen onComplete={initStore} />;
+  }
+
+  useEffect(() => {
+    if (ready && !searchQuery) {
       loadSecrets();
     }
-  }, [activeNamespace, searchQuery, loadSecrets]);
+  }, [ready, activeNamespace, searchQuery, loadSecrets]);
 
   async function handleSearch(query: string) {
     setSearchQuery(query);

@@ -4,6 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use arboard::Clipboard;
+use revvault_core::init::{init_vault, InitOptions};
 use secrecy::ExposeSecret;
 use tauri::State;
 
@@ -81,6 +82,18 @@ fn search_secrets(state: State<AppState>, query: String) -> Result<Vec<SecretInf
 }
 
 #[tauri::command]
+fn init_vault_cmd() -> Result<InitSummary, String> {
+    let summary = init_vault(InitOptions::default()).map_err(|e| e.to_string())?;
+    Ok(InitSummary {
+        store_dir: summary.store_dir.to_string_lossy().into_owned(),
+        identity_file: summary.identity_file.to_string_lossy().into_owned(),
+        public_key: summary.public_key,
+        store_existed: summary.store_existed,
+        identity_existed: summary.identity_existed,
+    })
+}
+
+#[tauri::command]
 fn copy_to_clipboard(value: String) -> Result<(), String> {
     let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(&value).map_err(|e| e.to_string())?;
@@ -102,12 +115,22 @@ struct SecretInfo {
     namespace: String,
 }
 
+#[derive(serde::Serialize)]
+struct InitSummary {
+    store_dir: String,
+    identity_file: String,
+    public_key: String,
+    store_existed: bool,
+    identity_existed: bool,
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             init_store,
+            init_vault_cmd,
             list_secrets,
             get_secret,
             set_secret,

@@ -12,6 +12,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize a new vault (create store directory and age identity)
+    Init(commands::init::InitArgs),
     /// Decrypt and print a secret
     Get(commands::get::GetArgs),
     /// Encrypt a secret from stdin
@@ -41,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init(args) => commands::init::run(args)?,
         Commands::Get(args) => commands::get::run(args)?,
         Commands::Set(args) => commands::set::run(args)?,
         Commands::List(args) => commands::list::run(args)?,
