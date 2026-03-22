@@ -7,6 +7,7 @@ import { Sidebar } from "./components/Sidebar";
 import { SecretList } from "./components/SecretList";
 import { SecretDetail } from "./components/SecretDetail";
 import { CreateSecretDialog } from "./components/CreateSecretDialog";
+import { RotationPanel } from "./components/RotationPanel";
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -17,6 +18,7 @@ export default function App() {
   const [activeNamespace, setActiveNamespace] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showRotation, setShowRotation] = useState(false);
 
   const loadSecrets = useCallback(async () => {
     try {
@@ -50,15 +52,15 @@ export default function App() {
     initStore();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (needsSetup) {
-    return <SetupScreen onComplete={initStore} />;
-  }
-
   useEffect(() => {
     if (ready && !searchQuery) {
       loadSecrets();
     }
   }, [ready, activeNamespace, searchQuery, loadSecrets]);
+
+  if (needsSetup) {
+    return <SetupScreen onComplete={initStore} />;
+  }
 
   async function handleSearch(query: string) {
     setSearchQuery(query);
@@ -77,6 +79,7 @@ export default function App() {
   function handleNamespaceSelect(ns: string | null) {
     setActiveNamespace(ns);
     setSelectedPath(null);
+    setShowRotation(false);
   }
 
   function handleCreated(path: string) {
@@ -114,21 +117,29 @@ export default function App() {
           namespaces={namespaces}
           active={activeNamespace}
           onSelect={handleNamespaceSelect}
+          showRotation={showRotation}
+          onRotationToggle={() => setShowRotation((v) => !v)}
         />
 
-        <SecretList
-          secrets={secrets}
-          selected={selectedPath}
-          onSelect={setSelectedPath}
-        />
+        {showRotation ? (
+          <RotationPanel />
+        ) : (
+          <>
+            <SecretList
+              secrets={secrets}
+              selected={selectedPath}
+              onSelect={setSelectedPath}
+            />
 
-        <SecretDetail
-          path={selectedPath}
-          onDeleted={() => {
-            setSelectedPath(null);
-            loadSecrets();
-          }}
-        />
+            <SecretDetail
+              path={selectedPath}
+              onDeleted={() => {
+                setSelectedPath(null);
+                loadSecrets();
+              }}
+            />
+          </>
+        )}
       </div>
 
       <CreateSecretDialog

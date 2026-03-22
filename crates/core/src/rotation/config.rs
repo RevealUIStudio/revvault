@@ -6,14 +6,14 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, RevvaultError};
 
 /// Rotation configuration loaded from `<store>/.revvault/rotation.toml`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RotationConfig {
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
 }
 
 /// Configuration for a single rotation provider.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     /// Secret path in the store containing the current API key.
     pub secret_path: String,

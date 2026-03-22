@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use arboard::Clipboard;
 use revvault_core::init::{init_vault, InitOptions};
+use revvault_core::rotation::{executor, RotationConfig};
 use secrecy::ExposeSecret;
 use tauri::State;
 
@@ -109,6 +110,60 @@ fn copy_to_clipboard(value: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn list_rotation_providers(state: State<AppState>) -> Result<Vec<ProviderInfo>, String> {
+    let guard = state.store.lock().map_err(|e| e.to_string())?;
+    let store = guard.as_ref().ok_or("Store not initialized")?;
+    let store_dir = store.store_dir().to_path_buf();
+    drop(guard);
+
+    let config = RotationConfig::load(&store_dir).map_err(|e| e.to_string())?;
+    let mut providers: Vec<ProviderInfo> = config
+        .providers
+        .into_iter()
+        .map(|(name, p)| ProviderInfo {
+            name,
+            secret_path: p.secret_path,
+        })
+        .collect();
+    providers.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(providers)
+}
+
+#[tauri::command]
+async fn rotate_secret(
+    state: State<'_, AppState>,
+    provider_name: String,
+) -> Result<(), String> {
+    // Briefly lock to get store_dir — released before any await
+    let store_dir = {
+        let guard = state.store.lock().map_err(|e| e.to_string())?;
+        let store = guard.as_ref().ok_or("Store not initialized")?;
+        store.store_dir().to_path_buf()
+    };
+
+    let rotation_config = RotationConfig::load(&store_dir).map_err(|e| e.to_string())?;
+    let provider_config = rotation_config
+        .providers
+        .get(&provider_name)
+        .ok_or_else(|| format!("Provider '{provider_name}' not found in rotation.toml"))?
+        .clone();
+
+    // Open a fresh store so no lock is held across the async HTTP calls
+    let config = revvault_core::Config::resolve().map_err(|e| e.to_string())?;
+    let store = revvault_core::PassageStore::open(config).map_err(|e| e.to_string())?;
+
+    executor::execute(&store, &provider_name, &provider_config)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct ProviderInfo {
+    name: String,
+    secret_path: String,
+}
+
 #[derive(serde::Serialize)]
 struct SecretInfo {
     path: String,
@@ -137,6 +192,8 @@ pub fn run() {
             delete_secret,
             search_secrets,
             copy_to_clipboard,
+            list_rotation_providers,
+            rotate_secret,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
