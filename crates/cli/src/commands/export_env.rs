@@ -10,6 +10,12 @@ pub struct ExportEnvArgs {
     pub path: String,
 }
 
+/// Shell-quote a value using single quotes, escaping any embedded single quotes.
+/// Output is safe for use with `eval` regardless of special characters in the value.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 pub fn run(args: ExportEnvArgs) -> anyhow::Result<()> {
     let config = Config::resolve()?;
     let store = PassageStore::open(config)?;
@@ -26,7 +32,9 @@ pub fn run(args: ExportEnvArgs) -> anyhow::Result<()> {
         for line in value.lines() {
             let trimmed = line.trim();
             if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                println!("{trimmed}");
+                if let Some((key, val)) = trimmed.split_once('=') {
+                    println!("export {}={}", key, shell_quote(val));
+                }
             }
         }
     } else {
@@ -38,7 +46,7 @@ pub fn run(args: ExportEnvArgs) -> anyhow::Result<()> {
             .unwrap_or(&args.path)
             .to_uppercase()
             .replace('-', "_");
-        println!("{var_name}={value}");
+        println!("export {}={}", var_name, shell_quote(value));
     }
 
     Ok(())
