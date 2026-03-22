@@ -127,27 +127,172 @@ fn read_existing_public_key(store_dir: &Path, identity_file: &Path) -> Result<St
         }
     }
 
-    // Fall back to parsing the identity file comment.
+    // Fall back to parsing the identity file.
     let contents = std::fs::read_to_string(identity_file)?;
+
+    // Try the `# public key:` comment first (written by revvault init).
     for line in contents.lines() {
         if let Some(key) = line.strip_prefix("# public key: ") {
             return Ok(key.trim().to_string());
         }
     }
 
-    // Last resort: load the identity and re-derive the public key.
-    let identities = age::IdentityFile::from_buffer(
-        std::io::BufReader::new(std::fs::File::open(identity_file)?),
-    )
-    .map_err(|e| {
-        RevvaultError::Other(anyhow::anyhow!("cannot parse identity file: {e}"))
-    })?;
+    // Last resort: parse a secret key line and re-derive the public key.
+    if let Some(identity) = contents
+        .lines()
+        .find(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .and_then(|l| l.trim().parse::<x25519::Identity>().ok())
+    {
+        return Ok(identity.to_public().to_string());
+    }
 
-    let _ = identities; // public key extraction not straightforward via this API
     Err(RevvaultError::Other(anyhow::anyhow!(
         "cannot determine public key from existing identity file — \
-         run `revvault init` after removing ~/.config/age/keys.txt to regenerate"
+         file may be corrupt or use an unsupported format"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::ExposeSecret as _;
+
+    fn opts(dir: &tempfile::TempDir) -> InitOptions {
+        InitOptions {
+            store_dir: Some(dir.path().join("store")),
+            identity_file: Some(dir.path().join("keys.txt")),
+        }
+    }
+
+    // ── fresh init ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fresh_init_creates_store_and_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let summary = init_vault(opts(&tmp)).unwrap();
+
+        assert!(!summary.store_existed);
+        assert!(!summary.identity_existed);
+        assert!(summary.store_dir.is_dir());
+        assert!(summary.identity_file.is_file());
+        assert!(summary.store_dir.join(".revvault").is_dir());
+        assert!(summary.store_dir.join(".age-recipients").is_file());
+        assert!(summary.public_key.starts_with("age1"));
+    }
+
+    #[test]
+    fn fresh_init_recipients_file_contains_public_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let summary = init_vault(opts(&tmp)).unwrap();
+
+        let recipients = std::fs::read_to_string(summary.store_dir.join(".age-recipients")).unwrap();
+        assert!(recipients.contains(&summary.public_key));
+    }
+
+    #[test]
+    fn fresh_init_identity_file_has_correct_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let summary = init_vault(opts(&tmp)).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&summary.identity_file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "identity file must be owner-read-only");
+        }
+    }
+
+    // ── idempotency ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn second_init_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = init_vault(opts(&tmp)).unwrap();
+        let second = init_vault(opts(&tmp)).unwrap();
+
+        assert!(second.store_existed);
+        assert!(second.identity_existed);
+        // Public key must be stable across calls.
+        assert_eq!(first.public_key, second.public_key);
+    }
+
+    #[test]
+    fn second_init_does_not_overwrite_identity_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_vault(opts(&tmp)).unwrap();
+
+        let identity_path = tmp.path().join("keys.txt");
+        let before = std::fs::read_to_string(&identity_path).unwrap();
+        init_vault(opts(&tmp)).unwrap();
+        let after = std::fs::read_to_string(&identity_path).unwrap();
+
+        assert_eq!(before, after);
+    }
+
+    // ── partial state: identity exists, store does not ────────────────────────
+
+    #[test]
+    fn init_with_existing_identity_no_store_reads_pubkey_from_comment() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Pre-write an identity file with the `# public key:` comment.
+        let identity = x25519::Identity::generate();
+        let pubkey = identity.to_public().to_string();
+        std::fs::write(
+            tmp.path().join("keys.txt"),
+            format!("# public key: {pubkey}\n{}\n", identity.to_string().expose_secret()),
+        )
+        .unwrap();
+
+        let summary = init_vault(opts(&tmp)).unwrap();
+
+        assert!(!summary.store_existed);
+        assert!(summary.identity_existed);
+        assert_eq!(summary.public_key, pubkey);
+    }
+
+    #[test]
+    fn init_with_identity_missing_comment_derives_pubkey_from_secret_key() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Write an identity file without the `# public key:` comment line.
+        let identity = x25519::Identity::generate();
+        let expected_pubkey = identity.to_public().to_string();
+        std::fs::write(
+            tmp.path().join("keys.txt"),
+            format!("# created: 2024-01-01\n{}\n", identity.to_string().expose_secret()),
+        )
+        .unwrap();
+
+        let summary = init_vault(opts(&tmp)).unwrap();
+
+        assert_eq!(summary.public_key, expected_pubkey);
+    }
+
+    // ── partial state: store exists with recipients, identity exists ──────────
+
+    #[test]
+    fn init_with_existing_recipients_file_reads_pubkey_from_it() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a store with a recipients file but no identity comment.
+        let store = tmp.path().join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let identity = x25519::Identity::generate();
+        let pubkey = identity.to_public().to_string();
+        std::fs::write(store.join(".age-recipients"), format!("{pubkey}\n")).unwrap();
+
+        // Write identity without the public key comment.
+        std::fs::write(
+            tmp.path().join("keys.txt"),
+            format!("{}\n", identity.to_string().expose_secret()),
+        )
+        .unwrap();
+
+        let summary = init_vault(opts(&tmp)).unwrap();
+
+        assert_eq!(summary.public_key, pubkey);
+    }
 }
 
 fn default_store_dir() -> PathBuf {
