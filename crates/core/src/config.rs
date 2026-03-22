@@ -121,17 +121,16 @@ impl Config {
         // Platform-aware default
         let home = home_dir()?;
 
-        let candidates = if cfg!(target_os = "linux") {
-            let win_user = env::var("WINDOWS_USERNAME").unwrap_or_else(|_| "joshu".into());
-            vec![
-                home.join(".revealui/passage-store"),
-                PathBuf::from("/mnt/c/Users")
-                    .join(&win_user)
-                    .join(".revealui/passage-store"),
-            ]
-        } else {
-            vec![home.join(".revealui/passage-store")]
-        };
+        let mut candidates = vec![home.join(".revealui/passage-store")];
+        if cfg!(target_os = "linux") {
+            if let Ok(win_user) = env::var("WINDOWS_USERNAME") {
+                candidates.push(
+                    PathBuf::from("/mnt/c/Users")
+                        .join(&win_user)
+                        .join(".revealui/passage-store"),
+                );
+            }
+        }
 
         for candidate in &candidates {
             if candidate.is_dir() {
@@ -165,21 +164,19 @@ impl Config {
 
         let home = home_dir()?;
 
-        let candidates = if cfg!(target_os = "linux") {
-            let win_user = env::var("WINDOWS_USERNAME").unwrap_or_else(|_| "joshu".into());
-            vec![
-                home.join(".config/age/keys.txt"),  // XDG standard location (checked first)
-                home.join(".age-identity/keys.txt"), // legacy location
-                PathBuf::from("/mnt/c/Users")
-                    .join(&win_user)
-                    .join(".age-identity/keys.txt"),
-            ]
-        } else {
-            vec![
-                home.join(".config/age/keys.txt"),
-                home.join(".age-identity/keys.txt"),
-            ]
-        };
+        let mut candidates = vec![
+            home.join(".config/age/keys.txt"),  // XDG standard location (checked first)
+            home.join(".age-identity/keys.txt"), // legacy location
+        ];
+        if cfg!(target_os = "linux") {
+            if let Ok(win_user) = env::var("WINDOWS_USERNAME") {
+                candidates.push(
+                    PathBuf::from("/mnt/c/Users")
+                        .join(&win_user)
+                        .join(".age-identity/keys.txt"),
+                );
+            }
+        }
 
         for candidate in &candidates {
             if candidate.is_file() {

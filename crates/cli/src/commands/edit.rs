@@ -142,22 +142,19 @@ fn secure_tmp(
     {
         use std::io::Write as _;
         use memfd::MemfdOptions;
-        match MemfdOptions::default()
+        if let Ok(mfd) = MemfdOptions::default()
             .allow_sealing(false)
             .close_on_exec(false)
             .create("revvault-edit")
         {
-            Ok(mfd) => {
-                let mut f = mfd.as_file();
-                f.write_all(content.as_bytes())?;
-                let fd_num = {
-                    use std::os::unix::io::AsRawFd;
-                    mfd.as_raw_fd()
-                };
-                let proc_path = PathBuf::from(format!("/proc/{}/fd/{fd_num}", std::process::id()));
-                return Ok((proc_path, Some(mfd)));
-            }
-            Err(_) => {}
+            let mut f = mfd.as_file();
+            f.write_all(content.as_bytes())?;
+            let fd_num = {
+                use std::os::unix::io::AsRawFd;
+                mfd.as_raw_fd()
+            };
+            let proc_path = PathBuf::from(format!("/proc/{}/fd/{fd_num}", std::process::id()));
+            return Ok((proc_path, Some(mfd)));
         }
     }
 

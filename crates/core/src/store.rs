@@ -266,6 +266,8 @@ mod tests {
             store_dir,
             identity_file: id_file,
             recipients_file: recip_file,
+            editor: None,
+            tmpdir: None,
         };
 
         let store = PassageStore::open(config).unwrap();
