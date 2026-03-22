@@ -11,11 +11,13 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
   const [value, setValue] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setRevealed(false);
     setValue(null);
     setCopied(false);
+    setError(null);
   }, [path]);
 
   if (!path) {
@@ -34,35 +36,38 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
     }
 
     setLoading(true);
+    setError(null);
     try {
       const result = await invoke<string>("get_secret", { path });
       setValue(result);
       setRevealed(true);
     } catch (e) {
-      console.error("Failed to decrypt:", e);
+      setError(String(e));
     } finally {
       setLoading(false);
     }
   }
 
   async function handleCopy() {
+    setError(null);
     try {
       const secret = value ?? (await invoke<string>("get_secret", { path }));
       await invoke("copy_to_clipboard", { value: secret });
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
-      console.error("Failed to copy:", e);
+      setError(String(e));
     }
   }
 
   async function handleDelete() {
     if (!confirm(`Delete "${path}"?`)) return;
+    setError(null);
     try {
       await invoke("delete_secret", { path });
       onDeleted();
     } catch (e) {
-      console.error("Failed to delete:", e);
+      setError(String(e));
     }
   }
 
@@ -86,6 +91,12 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
           </div>
         )}
       </div>
+
+      {error && (
+        <div className="mb-4 rounded-md border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-300">
+          {error}
+        </div>
+      )}
 
       <div className="flex gap-2">
         <button
