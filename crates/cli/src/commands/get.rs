@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use arboard::Clipboard;
 use clap::Args;
 use secrecy::ExposeSecret;
+use serde_json::json;
 
 use revvault_core::Config;
 use revvault_core::PassageStore;
@@ -21,11 +22,22 @@ pub struct GetArgs {
     pub full: bool,
 }
 
-pub fn run(args: GetArgs) -> anyhow::Result<()> {
+pub fn run(args: GetArgs, json_output: bool) -> anyhow::Result<()> {
     let config = Config::resolve()?;
     let store = PassageStore::open(config)?;
     let secret = store.get(&args.path)?;
     let value = secret.expose_secret();
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "path": args.path,
+                "value": value,
+            }))?
+        );
+        return Ok(());
+    }
 
     if args.clip {
         let mut clipboard = Clipboard::new()?;

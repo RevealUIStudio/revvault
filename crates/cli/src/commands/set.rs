@@ -1,6 +1,7 @@
 use std::io::{self, Read};
 
 use clap::Args;
+use serde_json::json;
 
 use revvault_core::Config;
 use revvault_core::PassageStore;
@@ -15,7 +16,7 @@ pub struct SetArgs {
     pub force: bool,
 }
 
-pub fn run(args: SetArgs) -> anyhow::Result<()> {
+pub fn run(args: SetArgs, json_output: bool) -> anyhow::Result<()> {
     let config = Config::resolve()?;
     let store = PassageStore::open(config)?;
 
@@ -33,6 +34,17 @@ pub fn run(args: SetArgs) -> anyhow::Result<()> {
         store.set(&args.path, trimmed.as_bytes())?;
     }
 
-    eprintln!("Stored: {}", args.path);
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "status": "stored",
+                "path": args.path,
+            }))?
+        );
+    } else {
+        eprintln!("Stored: {}", args.path);
+    }
+
     Ok(())
 }

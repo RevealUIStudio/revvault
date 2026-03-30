@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use clap::Args;
+use serde_json::json;
 
 use revvault_core::Config;
 use revvault_core::PassageStore;
@@ -15,10 +16,24 @@ pub struct ListArgs {
     pub tree: bool,
 }
 
-pub fn run(args: ListArgs) -> anyhow::Result<()> {
+pub fn run(args: ListArgs, json_output: bool) -> anyhow::Result<()> {
     let config = Config::resolve()?;
     let store = PassageStore::open(config)?;
     let entries = store.list(args.prefix.as_deref())?;
+
+    if json_output {
+        let items: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                json!({
+                    "path": e.path,
+                    "namespace": e.namespace.to_string(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&items)?);
+        return Ok(());
+    }
 
     if entries.is_empty() {
         eprintln!("No secrets found.");

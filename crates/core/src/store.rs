@@ -162,6 +162,24 @@ impl PassageStore {
         Ok(scored.into_iter().map(|(_, entry)| entry).collect())
     }
 
+    /// Fuzzy search for secrets by path, returning match scores.
+    pub fn search_scored(&self, query: &str) -> Result<Vec<(i64, SecretEntry)>> {
+        let matcher = SkimMatcherV2::default();
+        let mut entries = self.list(None)?;
+
+        let mut scored: Vec<(i64, SecretEntry)> = entries
+            .drain(..)
+            .filter_map(|entry| {
+                matcher
+                    .fuzzy_match(&entry.path, query)
+                    .map(|score| (score, entry))
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        Ok(scored)
+    }
+
     /// Delete a secret by its path.
     pub fn delete(&self, path: &str) -> Result<()> {
         validate_path(path)?;

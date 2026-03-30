@@ -1,4 +1,5 @@
 use clap::Args;
+use serde_json::json;
 
 use revvault_core::init::{init_vault, InitOptions};
 
@@ -13,11 +14,24 @@ pub struct InitArgs {
     pub identity_file: Option<std::path::PathBuf>,
 }
 
-pub fn run(args: InitArgs) -> anyhow::Result<()> {
+pub fn run(args: InitArgs, json_output: bool) -> anyhow::Result<()> {
     let summary = init_vault(InitOptions {
         store_dir: args.store_dir,
         identity_file: args.identity_file,
     })?;
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "status": "initialized",
+                "store": summary.store_dir.to_string_lossy(),
+                "identity": summary.identity_file.to_string_lossy(),
+                "public_key": summary.public_key,
+            }))?
+        );
+        return Ok(());
+    }
 
     if summary.store_existed && summary.identity_existed {
         eprintln!(
