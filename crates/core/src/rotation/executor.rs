@@ -7,7 +7,7 @@
 use std::io::Write as _;
 
 use chrono::Utc;
-use secrecy::ExposeSecret as _;
+use secrecy::{ExposeSecret as _, SecretString};
 
 use crate::error::Result;
 use crate::rotation::config::ProviderConfig;
@@ -52,7 +52,7 @@ pub async fn execute(
     // 3. Build provider
     let provider = GenericHttpProvider::from_config(
         provider_name.to_string(),
-        current_key.expose_secret().to_string(),
+        SecretString::from(current_key.expose_secret().to_string()),
         old_key_id,
         &provider_config.settings,
     )?;
@@ -64,7 +64,10 @@ pub async fn execute(
 
     // 5. Write new key
     store
-        .upsert(&provider_config.secret_path, outcome.new_value.as_bytes())
+        .upsert(
+            &provider_config.secret_path,
+            outcome.new_value.expose_secret().as_bytes(),
+        )
         .map_err(|e| anyhow::anyhow!("cannot write new key to vault: {e}"))?;
 
     // 6. Write new key ID (enables revocation in the next rotation)
@@ -109,7 +112,7 @@ pub async fn dry_run(
 
     let provider = GenericHttpProvider::from_config(
         provider_name.to_string(),
-        current_key.expose_secret().to_string(),
+        SecretString::from(current_key.expose_secret().to_string()),
         old_key_id,
         &provider_config.settings,
     )?;

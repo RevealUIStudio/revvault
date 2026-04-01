@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use age::x25519;
 use mockito::Server;
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use tempfile::TempDir;
 
 use revvault_core::config::Config;
@@ -62,7 +62,7 @@ fn settings(overrides: &[(&str, &str)]) -> HashMap<String, String> {
 #[test]
 fn from_config_rejects_missing_create_url() {
     let s = settings(&[("response_field", "key")]);
-    let err = GenericHttpProvider::from_config("test".into(), "old".into(), None, &s);
+    let err = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s);
     assert!(err.is_err());
     assert!(err.unwrap_err().to_string().contains("create_url"));
 }
@@ -70,7 +70,7 @@ fn from_config_rejects_missing_create_url() {
 #[test]
 fn from_config_rejects_missing_response_field() {
     let s = settings(&[("create_url", "https://example.com/keys")]);
-    let err = GenericHttpProvider::from_config("test".into(), "old".into(), None, &s);
+    let err = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s);
     assert!(err.is_err());
     assert!(err.unwrap_err().to_string().contains("response_field"));
 }
@@ -81,7 +81,7 @@ fn from_config_accepts_minimal_settings() {
         ("create_url", "https://example.com/keys"),
         ("response_field", "key"),
     ]);
-    assert!(GenericHttpProvider::from_config("test".into(), "old".into(), None, &s).is_ok());
+    assert!(GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ async fn preflight_rejects_invalid_create_url() {
         ("create_url", "not-a-url"),
         ("response_field", "key"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), "old".into(), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
     assert!(p.preflight().await.is_err());
 }
 
@@ -105,7 +105,7 @@ async fn preflight_accepts_valid_urls() {
         ("response_field", "key"),
         ("revoke_url", "https://api.example.com/keys/{old_key_id}"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), "old".into(), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
     assert!(p.preflight().await.is_ok());
 }
 
@@ -119,7 +119,7 @@ async fn dry_run_mentions_create_url_and_response_field() {
         ("create_url", "https://api.example.com/keys"),
         ("response_field", "data.token"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), "old".into(), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
     let plan = p.dry_run().await.unwrap();
     assert!(plan.contains("https://api.example.com/keys"));
     assert!(plan.contains("data.token"));
@@ -133,7 +133,7 @@ async fn dry_run_shows_revoke_url_when_configured() {
         ("response_field", "key"),
         ("revoke_url", "https://api.example.com/keys/{old_key_id}"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), "old".into(), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
     let plan = p.dry_run().await.unwrap();
     assert!(plan.contains("https://api.example.com/keys/{old_key_id}"));
 }
@@ -158,10 +158,10 @@ async fn rotate_creates_key_and_returns_new_value() {
         ("create_url", &format!("{}/keys", server.url())),
         ("response_field", "key"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), "old-key".into(), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old-key".to_string()), None, &s).unwrap();
     let outcome = p.rotate().await.unwrap();
 
-    assert_eq!(outcome.new_value, "new-secret-value");
+    assert_eq!(outcome.new_value.expose_secret(), "new-secret-value");
     assert!(outcome.new_key_id.is_none());
 }
 
@@ -182,10 +182,10 @@ async fn rotate_extracts_nested_response_field() {
         ("response_field", "data.token"),
         ("id_field", "data.id"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), "old-key".into(), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old-key".to_string()), None, &s).unwrap();
     let outcome = p.rotate().await.unwrap();
 
-    assert_eq!(outcome.new_value, "nested-token");
+    assert_eq!(outcome.new_value.expose_secret(), "nested-token");
     assert_eq!(outcome.new_key_id.as_deref(), Some("tok_123"));
 }
 
@@ -216,10 +216,10 @@ async fn rotate_revokes_old_key_by_value() {
         ),
     ]);
     let p =
-        GenericHttpProvider::from_config("test".into(), "old-key-value".into(), None, &s).unwrap();
+        GenericHttpProvider::from_config("test".into(), SecretString::from("old-key-value".to_string()), None, &s).unwrap();
     let outcome = p.rotate().await.unwrap();
 
-    assert_eq!(outcome.new_value, "brand-new-key");
+    assert_eq!(outcome.new_value.expose_secret(), "brand-new-key");
     _revoke.assert_async().await;
 }
 
@@ -252,14 +252,14 @@ async fn rotate_revokes_old_key_by_id() {
     ]);
     let p = GenericHttpProvider::from_config(
         "test".into(),
-        "old-key-value".into(),
+        SecretString::from("old-key-value".to_string()),
         Some("old-id-123".into()),
         &s,
     )
     .unwrap();
     let outcome = p.rotate().await.unwrap();
 
-    assert_eq!(outcome.new_value, "new-key");
+    assert_eq!(outcome.new_value.expose_secret(), "new-key");
     assert_eq!(outcome.new_key_id.as_deref(), Some("new-id-456"));
     _revoke.assert_async().await;
 }
@@ -279,7 +279,7 @@ async fn rotate_fails_on_non_2xx_create() {
         ("create_url", &format!("{}/keys", server.url())),
         ("response_field", "key"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), "bad-key".into(), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("bad-key".to_string()), None, &s).unwrap();
     let err = p.rotate().await.unwrap_err();
     assert!(err.to_string().contains("401"));
 }
@@ -300,7 +300,7 @@ async fn rotate_fails_when_response_field_missing() {
         ("create_url", &format!("{}/keys", server.url())),
         ("response_field", "key"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), "old".into(), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
     let err = p.rotate().await.unwrap_err();
     assert!(err.to_string().contains("'key' not found"));
 }

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -8,7 +9,7 @@ use crate::error::Result;
 #[derive(Debug)]
 pub struct RotationOutcome {
     /// New secret value to store in the vault.
-    pub new_value: String,
+    pub new_value: SecretString,
     /// Opaque identifier for the new key (e.g. numeric token ID).
     /// Stored in the vault for use as `old_key_id` in the next rotation.
     pub new_key_id: Option<String>,

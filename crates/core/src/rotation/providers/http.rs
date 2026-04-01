@@ -35,6 +35,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use reqwest::Client;
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 
 use crate::error::{Result, RevvaultError};
@@ -51,7 +52,7 @@ enum AuthType {
 pub struct GenericHttpProvider {
     name: String,
     /// Current key value — read from the vault by the executor.
-    current_key: String,
+    current_key: SecretString,
     /// Key ID from the *previous* rotation — used in `{old_key_id}` revoke substitution.
     old_key_id: Option<String>,
     create_url: String,
@@ -72,7 +73,7 @@ impl GenericHttpProvider {
     /// `old_key_id`  — ID stored from the previous rotation (may be absent for first run).
     pub fn from_config(
         name: String,
-        current_key: String,
+        current_key: SecretString,
         old_key_id: Option<String>,
         settings: &HashMap<String, String>,
     ) -> Result<Self> {
@@ -125,8 +126,10 @@ impl GenericHttpProvider {
 
     fn apply_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match self.auth_type {
-            AuthType::Bearer => builder.bearer_auth(&self.current_key),
-            AuthType::Header => builder.header(&self.auth_header_name, &self.current_key),
+            AuthType::Bearer => builder.bearer_auth(self.current_key.expose_secret()),
+            AuthType::Header => {
+                builder.header(&self.auth_header_name, self.current_key.expose_secret())
+            }
             AuthType::None => builder,
         }
     }
@@ -224,7 +227,9 @@ impl RotationProvider for GenericHttpProvider {
         let client = Client::new();
 
         // --- Step 1: Create new key ---
-        let body = self.create_body.replace("{current_key}", &self.current_key);
+        let body = self
+            .create_body
+            .replace("{current_key}", self.current_key.expose_secret());
 
         let create_req = match self.create_method.to_uppercase().as_str() {
             "POST" => client.post(&self.create_url),
@@ -253,15 +258,17 @@ impl RotationProvider for GenericHttpProvider {
             .await
             .map_err(|e| self.rotation_failed(format!("create response is not JSON: {e}")))?;
 
-        let new_value = Self::extract_field(&json, &self.response_field)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                self.rotation_failed(format!(
-                    "field '{}' not found or not a string in create response",
-                    self.response_field
-                ))
-            })?
-            .to_string();
+        let new_value = SecretString::from(
+            Self::extract_field(&json, &self.response_field)
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    self.rotation_failed(format!(
+                        "field '{}' not found or not a string in create response",
+                        self.response_field
+                    ))
+                })?
+                .to_string(),
+        );
 
         let new_key_id = self.id_field.as_deref().and_then(|path| {
             Self::extract_field(&json, path).and_then(|v| {
@@ -276,7 +283,7 @@ impl RotationProvider for GenericHttpProvider {
         if let Some(ref url_template) = self.revoke_url {
             // Substitute {old_key} with the key value, {old_key_id} with the stored ID.
             let url = url_template
-                .replace("{old_key}", &self.current_key)
+                .replace("{old_key}", self.current_key.expose_secret())
                 .replace(
                     "{old_key_id}",
                     self.old_key_id.as_deref().unwrap_or(""),

@@ -3,7 +3,7 @@ use std::process::Command;
 
 use clap::Args;
 use secrecy::ExposeSecret;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use revvault_core::Config;
 use revvault_core::PassageStore;
@@ -33,7 +33,7 @@ pub fn run(args: EditArgs) -> anyhow::Result<()> {
 
     let store = PassageStore::open(config)?;
     let secret = store.get(&args.path)?;
-    let current = secret.expose_secret().to_string();
+    let current = Zeroizing::new(secret.expose_secret().to_string());
 
     // Determine which editor to use.
     let editor_cmd = editor_field
@@ -47,8 +47,9 @@ pub fn run(args: EditArgs) -> anyhow::Result<()> {
                 eprintln!("No changes made.");
             }
             Some(new_content) => {
-                let trimmed = new_content.trim().to_string();
-                if trimmed == current.trim() {
+                let new_content = Zeroizing::new(new_content);
+                let trimmed = Zeroizing::new(new_content.trim().to_string());
+                if *trimmed == current.trim() {
                     eprintln!("No changes made.");
                 } else {
                     store.upsert(&args.path, trimmed.as_bytes())?;
@@ -82,17 +83,13 @@ pub fn run(args: EditArgs) -> anyhow::Result<()> {
     }
 
     // Read back and re-encrypt
-    let new_value = std::fs::read_to_string(&tmp_path)?;
-    let trimmed = new_value.trim().to_string();
+    let new_value = Zeroizing::new(std::fs::read_to_string(&tmp_path)?);
+    let trimmed = Zeroizing::new(new_value.trim().to_string());
 
     // Zero out the temp file contents on disk before removal
     cleanup_tmp(tmp_fd, &tmp_path);
 
-    // Zero out the in-memory copy of the original plaintext
-    let mut plain = current.clone();
-    plain.zeroize();
-
-    if trimmed == current.trim() {
+    if *trimmed == current.trim() {
         eprintln!("No changes made.");
         return Ok(());
     }
