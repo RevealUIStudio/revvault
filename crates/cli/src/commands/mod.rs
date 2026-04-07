@@ -9,3 +9,4 @@ pub mod migrate;
 pub mod rotate;
 pub mod search;
 pub mod set;
+pub mod sync;
