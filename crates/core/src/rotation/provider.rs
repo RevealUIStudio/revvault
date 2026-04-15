@@ -24,6 +24,10 @@ pub struct RotationLogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_key_id: Option<String>,
     pub status: String,
+    /// Whether the post-rotation verify command passed (`true`), failed (`false`),
+    /// or was not configured (`None`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
 }
 
 /// Trait for secret rotation providers.

@@ -32,3 +32,7 @@ CLAUDE.md
 # AI tool configs (local only)
 CLAUDE.md
 .claude/
+
+# editor-configs (symlinked)
+.cursor/
+.agents/

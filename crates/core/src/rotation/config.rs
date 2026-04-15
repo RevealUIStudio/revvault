@@ -20,6 +20,12 @@ pub struct ProviderConfig {
     /// Provider-specific settings.
     #[serde(default)]
     pub settings: HashMap<String, String>,
+    /// Shell commands to run after successful rotation (e.g., sync to Vercel).
+    #[serde(default)]
+    pub post_rotate: Vec<String>,
+    /// Verification command — must exit 0 for rotation to be considered successful.
+    #[serde(default)]
+    pub verify: Option<String>,
 }
 
 impl RotationConfig {
