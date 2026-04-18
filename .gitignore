@@ -27,3 +27,8 @@ Thumbs.db
 
 # Tauri
 crates/tauri-app/gen/
+CLAUDE.md
+
+# AI tool configs (local only)
+CLAUDE.md
+.claude/
