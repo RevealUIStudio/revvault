@@ -141,11 +141,18 @@ fn categorize_by_filename(name: &str) -> (&str, String, &str) {
     if lower.contains("redis") {
         return ("credentials/redis", sanitize_name(name), "filename:redis");
     }
+    // NOTE: Resend was removed from the RevealUI stack on 2026-04-09 in favor of
+    // Gmail API via Google Workspace. Kept here as a legacy-migration heuristic
+    // so users importing older plaintext dumps still get sensible categorization.
     if lower.contains("resend") {
         return ("credentials/resend", sanitize_name(name), "filename:resend");
     }
 
-    // AI providers
+    // AI providers. NOTE: BYOK (bring-your-own-key) for customer-facing proprietary
+    // providers was removed 2026-04-05 — the RevealUI AI stack is open-model-only.
+    // These heuristics remain for plaintext imports of older dev-machine dumps
+    // where Joshua personally holds OpenAI/Anthropic keys; they are no longer a
+    // supported customer path.
     if lower.contains("openai") || lower.contains("gpt") {
         return ("credentials/openai", sanitize_name(name), "filename:openai");
     }
