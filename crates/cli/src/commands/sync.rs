@@ -50,7 +50,7 @@ struct SyncManifest {
 struct ProjectSync {
     /// Vercel project ID
     project_id: String,
-    /// Vault path prefix for this project's secrets (e.g., "revealui/vercel/cms")
+    /// Vault path prefix for this project's secrets (e.g., "revealui/vercel/admin")
     vault_prefix: String,
     /// Environment targets: production, preview, development
     #[serde(default = "default_targets")]
