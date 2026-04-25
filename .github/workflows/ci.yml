@@ -1,16 +1,17 @@
-name: CI
+name: ci
 
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -18,18 +19,134 @@ env:
 
 jobs:
   test:
+    # NOTE: job name preserved as "Test (core + cli)" to match the required
+    # status check registered with branch protection. To rename safely,
+    # update the branch-protection rule first (Settings → Branches → main).
     name: Test (core + cli)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
-
-      # Run the library + integration tests for the core and CLI crates.
       # The Tauri desktop crate (`revvault-tauri`) is excluded because it
       # requires libwebkit2gtk-4.1-dev + libgtk-3-dev and ships through a
       # separate release pipeline.
-      - name: cargo test (core + cli)
+      - name: cargo test -p revvault-core -p revvault-cli --all-targets
         run: cargo test -p revvault-core -p revvault-cli --all-targets
+
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check --all
+        run: cargo fmt --check --all
+
+  clippy:
+    name: cargo clippy -D warnings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Workspace clippy would pull in revvault-tauri whose deps need gtk;
+      # mirror the test job's scope and lint core + cli only. Matches the
+      # standard set in scripts/ci.sh + .claude/rules/rust.md ("Run cargo
+      # clippy --workspace and cargo fmt --check before committing").
+      - name: cargo clippy -p revvault-core -p revvault-cli -- -D warnings
+        run: cargo clippy -p revvault-core -p revvault-cli --all-targets -- -D warnings
+
+  frontend-build:
+    name: pnpm build (tsc + vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: pnpm install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - name: pnpm build
+        run: pnpm build
+        working-directory: frontend
+
+  frontend-test:
+    name: pnpm test (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: pnpm install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - name: pnpm test
+        run: pnpm test
+        working-directory: frontend
+
+  shellcheck:
+    name: ShellCheck (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          severity: warning
+
+  no-hardcoded-user:
+    name: anti-regression — no hardcoded "joshu"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Grep for hardcoded "joshu" in scripted files
+        run: |
+          set -euo pipefail
+          # Universal anti-regression guard mirrored from revkit#5 / forge#6
+          # / revcon#2. revvault scripts/ + crates/cli touch developer
+          # environments — a hardcoded user-account path would propagate
+          # into operator workflows. Limited to scripted file types so this
+          # workflow file (which has to mention the literal patterns to
+          # scan for them) doesn't match itself.
+          includes=(--include='*.sh' --include='*.ps1' --include='*.psm1' --include='*.psd1')
+          hits=$(grep -rn 'joshu\b' "${includes[@]}" . || true)
+          if [ -n "$hits" ]; then
+            echo "::error::Hardcoded user-account name found in scripted files."
+            echo "$hits"
+            exit 1
+          fi
+          mnt_hits=$(grep -rn '/mnt/c/Users/joshu' "${includes[@]}" . || true)
+          if [ -n "$mnt_hits" ]; then
+            echo "::error::Hardcoded /mnt/c/Users path found in scripted files."
+            echo "$mnt_hits"
+            exit 1
+          fi
+          echo "ok — no hardcoded user paths in scripted files"
+
+  gitleaks:
+    name: Gitleaks (full history)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

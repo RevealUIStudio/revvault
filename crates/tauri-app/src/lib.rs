@@ -131,10 +131,7 @@ fn list_rotation_providers(state: State<AppState>) -> Result<Vec<ProviderInfo>, 
 }
 
 #[tauri::command]
-async fn rotate_secret(
-    state: State<'_, AppState>,
-    provider_name: String,
-) -> Result<(), String> {
+async fn rotate_secret(state: State<'_, AppState>, provider_name: String) -> Result<(), String> {
     // Briefly lock to get store_dir — released before any await
     let store_dir = {
         let guard = state.store.lock().map_err(|e| e.to_string())?;

@@ -59,9 +59,7 @@ pub fn run(args: InitArgs, json_output: bool) -> anyhow::Result<()> {
     eprintln!(
         "WARNING: Back up your identity file — if you lose it, all secrets are unrecoverable."
     );
-    eprintln!(
-        "         Store a copy in a password manager or secure offline location."
-    );
+    eprintln!("         Store a copy in a password manager or secure offline location.");
     eprintln!("         Identity: {}", summary.identity_file.display());
     eprintln!();
     eprintln!("Your vault is ready. Try:");

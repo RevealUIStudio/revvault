@@ -158,7 +158,7 @@ impl PassageStore {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|b| std::cmp::Reverse(b.0));
         Ok(scored.into_iter().map(|(_, entry)| entry).collect())
     }
 
@@ -176,7 +176,7 @@ impl PassageStore {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|b| std::cmp::Reverse(b.0));
         Ok(scored)
     }
 

@@ -78,17 +78,19 @@ pub async fn execute(
     }
 
     // 7. Append log entry
-    append_log(store, provider_name, &provider_config.secret_path, &outcome.new_key_id)?;
+    append_log(
+        store,
+        provider_name,
+        &provider_config.secret_path,
+        &outcome.new_key_id,
+    )?;
 
     eprintln!(
         "✓ Rotated '{}' for provider '{}'",
         provider_config.secret_path, provider_name
     );
     if outcome.new_key_id.is_some() {
-        eprintln!(
-            "  Key ID stored at '{}' for next rotation",
-            id_path
-        );
+        eprintln!("  Key ID stored at '{}' for next rotation", id_path);
     }
 
     Ok(())

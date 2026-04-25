@@ -165,7 +165,7 @@ impl Config {
         let home = home_dir()?;
 
         let mut candidates = vec![
-            home.join(".config/age/keys.txt"),  // XDG standard location (checked first)
+            home.join(".config/age/keys.txt"), // XDG standard location (checked first)
             home.join(".age-identity/keys.txt"), // legacy location
         ];
         if cfg!(target_os = "linux") {

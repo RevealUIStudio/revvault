@@ -59,7 +59,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::ExportEnv(args) => commands::export_env::run(args, json),
         Commands::Edit(args) => commands::edit::run(args),
         Commands::Delete(args) => commands::delete::run(args, json),
-        Commands::Completions(args) => Ok(commands::completions::run(args)),
+        Commands::Completions(args) => {
+            commands::completions::run(args);
+            Ok(())
+        }
         Commands::Migrate(args) => commands::migrate::run(args),
         Commands::Rotate(args) => commands::rotate::run(args).await,
         Commands::RotationStatus => commands::rotate::status(),

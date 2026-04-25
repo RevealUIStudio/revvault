@@ -187,7 +187,10 @@ impl VercelClient {
         value: &str,
         targets: &[String],
     ) -> anyhow::Result<()> {
-        let mut url = format!("https://api.vercel.com/v10/projects/{}/env/{}", project_id, env_id);
+        let mut url = format!(
+            "https://api.vercel.com/v10/projects/{}/env/{}",
+            project_id, env_id
+        );
         if let Some(ref team) = self.team_id {
             url.push_str(&format!("?teamId={}", team));
         }
@@ -217,7 +220,10 @@ impl VercelClient {
     /// Delete an env var. Reserved for future orphan cleanup mode.
     #[allow(dead_code)]
     async fn delete_env_var(&self, project_id: &str, env_id: &str) -> anyhow::Result<()> {
-        let mut url = format!("https://api.vercel.com/v10/projects/{}/env/{}", project_id, env_id);
+        let mut url = format!(
+            "https://api.vercel.com/v10/projects/{}/env/{}",
+            project_id, env_id
+        );
         if let Some(ref team) = self.team_id {
             url.push_str(&format!("?teamId={}", team));
         }
@@ -273,7 +279,9 @@ pub async fn run(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
     let token = args
         .token
         .or_else(|| std::env::var("VERCEL_TOKEN").ok())
-        .ok_or_else(|| anyhow::anyhow!("VERCEL_TOKEN not set. Pass --token or set VERCEL_TOKEN env var"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("VERCEL_TOKEN not set. Pass --token or set VERCEL_TOKEN env var")
+        })?;
 
     let manifest_content = fs::read_to_string(&args.manifest)
         .with_context(|| format!("Cannot read manifest: {}", args.manifest.display()))?;
@@ -389,7 +397,7 @@ async fn push_mode(
     for (project_name, project_cfg) in &manifest.projects {
         let remote_vars = client.list_env_vars(&project_cfg.project_id).await?;
         let remote_map: HashMap<String, &VercelEnvVar> =
-            remote_vars.iter().filter_map(|v| Some((v.key.clone(), v))).collect();
+            remote_vars.iter().map(|v| (v.key.clone(), v)).collect();
 
         // List vault secrets under this project's prefix
         let vault_secrets = store.list(Some(&project_cfg.vault_prefix))?;
@@ -466,7 +474,11 @@ async fn push_mode(
                 })
             );
         } else {
-            println!("\n\x1b[1m{}\x1b[0m (push{})", project_name, if apply { "" } else { " — dry-run" });
+            println!(
+                "\n\x1b[1m{}\x1b[0m (push{})",
+                project_name,
+                if apply { "" } else { " — dry-run" }
+            );
             for entry in &diff {
                 let (symbol, color) = match entry.action {
                     DiffAction::Add => ("+", "\x1b[32m"),
@@ -474,7 +486,11 @@ async fn push_mode(
                     DiffAction::Orphan => ("!", "\x1b[31m"),
                     DiffAction::Skip => ("-", "\x1b[90m"),
                 };
-                let reason = entry.reason.as_deref().map(|r| format!(" ({})", r)).unwrap_or_default();
+                let reason = entry
+                    .reason
+                    .as_deref()
+                    .map(|r| format!(" ({})", r))
+                    .unwrap_or_default();
                 println!("  {}{}\x1b[0m {}{}", color, symbol, entry.key, reason);
             }
         }

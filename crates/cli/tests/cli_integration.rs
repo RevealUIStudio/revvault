@@ -421,9 +421,7 @@ fn list_tree_format() {
         .arg("--tree")
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("credentials/").and(predicate::str::contains("ssh/")),
-        );
+        .stdout(predicate::str::contains("credentials/").and(predicate::str::contains("ssh/")));
 }
 
 // ---------------------------------------------------------------------------
@@ -629,7 +627,11 @@ fn rotation_status_shows_recent_entries() {
     let revvault_dir = Path::new(&store).join(".revvault");
     std::fs::create_dir_all(&revvault_dir).unwrap();
     let log_entry = r#"{"timestamp":"2026-01-01T00:00:00Z","provider":"svc","secret_path":"credentials/svc/key","new_key_id":null,"status":"success"}"#;
-    std::fs::write(revvault_dir.join("rotation-log.jsonl"), format!("{log_entry}\n")).unwrap();
+    std::fs::write(
+        revvault_dir.join("rotation-log.jsonl"),
+        format!("{log_entry}\n"),
+    )
+    .unwrap();
 
     revvault_cmd(&store, &identity)
         .arg("rotation-status")
