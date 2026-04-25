@@ -43,13 +43,9 @@ pub struct InitOptions {
 /// Safe to call on an already-initialized vault — it will not overwrite
 /// existing keys.
 pub fn init_vault(options: InitOptions) -> Result<InitSummary> {
-    let store_dir = options
-        .store_dir
-        .unwrap_or_else(default_store_dir);
+    let store_dir = options.store_dir.unwrap_or_else(default_store_dir);
 
-    let identity_file = options
-        .identity_file
-        .unwrap_or_else(default_identity_file);
+    let identity_file = options.identity_file.unwrap_or_else(default_identity_file);
 
     // --- Store directory ---
     let store_existed = store_dir.exists();
@@ -152,6 +148,18 @@ fn read_existing_public_key(store_dir: &Path, identity_file: &Path) -> Result<St
     )))
 }
 
+fn default_store_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".revealui/passage-store")
+}
+
+fn default_identity_file() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config/age/keys.txt")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,7 +193,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let summary = init_vault(opts(&tmp)).unwrap();
 
-        let recipients = std::fs::read_to_string(summary.store_dir.join(".age-recipients")).unwrap();
+        let recipients =
+            std::fs::read_to_string(summary.store_dir.join(".age-recipients")).unwrap();
         assert!(recipients.contains(&summary.public_key));
     }
 
@@ -197,7 +206,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&summary.identity_file).unwrap().permissions().mode();
+            let mode = std::fs::metadata(&summary.identity_file)
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600, "identity file must be owner-read-only");
         }
     }
@@ -240,7 +252,10 @@ mod tests {
         let pubkey = identity.to_public().to_string();
         std::fs::write(
             tmp.path().join("keys.txt"),
-            format!("# public key: {pubkey}\n{}\n", identity.to_string().expose_secret()),
+            format!(
+                "# public key: {pubkey}\n{}\n",
+                identity.to_string().expose_secret()
+            ),
         )
         .unwrap();
 
@@ -260,7 +275,10 @@ mod tests {
         let expected_pubkey = identity.to_public().to_string();
         std::fs::write(
             tmp.path().join("keys.txt"),
-            format!("# created: 2024-01-01\n{}\n", identity.to_string().expose_secret()),
+            format!(
+                "# created: 2024-01-01\n{}\n",
+                identity.to_string().expose_secret()
+            ),
         )
         .unwrap();
 
@@ -293,16 +311,4 @@ mod tests {
 
         assert_eq!(summary.public_key, pubkey);
     }
-}
-
-fn default_store_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".revealui/passage-store")
-}
-
-fn default_identity_file() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config/age/keys.txt")
 }

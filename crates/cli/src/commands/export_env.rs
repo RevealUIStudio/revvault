@@ -29,7 +29,9 @@ fn parse_env_vars(path: &str, value: &str) -> Vec<(String, String)> {
             .filter_map(|line| {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                    trimmed.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))
+                    trimmed
+                        .split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
                 } else {
                     None
                 }

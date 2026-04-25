@@ -102,11 +102,8 @@ pub fn edit(secret_path: &str, content: &str) -> anyhow::Result<Option<String>> 
             } else {
                 "  F2 save   Ctrl+Q quit   Ctrl+Z undo   Ctrl+Y redo"
             };
-            let footer = Paragraph::new(footer_text).style(
-                Style::new()
-                    .bg(Color::DarkGray)
-                    .fg(Color::DarkGray),
-            );
+            let footer = Paragraph::new(footer_text)
+                .style(Style::new().bg(Color::DarkGray).fg(Color::DarkGray));
             frame.render_widget(footer, chunks[2]);
         })?;
 

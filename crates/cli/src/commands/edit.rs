@@ -137,8 +137,8 @@ fn secure_tmp(
     // Kept as fallback when /dev/shm is unavailable.
     #[cfg(target_os = "linux")]
     {
-        use std::io::Write as _;
         use memfd::MemfdOptions;
+        use std::io::Write as _;
         if let Ok(mfd) = MemfdOptions::default()
             .allow_sealing(false)
             .close_on_exec(false)

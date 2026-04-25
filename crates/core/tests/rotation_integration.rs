@@ -26,10 +26,7 @@ fn setup_store() -> (TempDir, PassageStore) {
     let id_file = dir.path().join("keys.txt");
     std::fs::write(
         &id_file,
-        format!(
-            "# test identity\n{}\n",
-            id.to_string().expose_secret()
-        ),
+        format!("# test identity\n{}\n", id.to_string().expose_secret()),
     )
     .unwrap();
 
@@ -62,7 +59,12 @@ fn settings(overrides: &[(&str, &str)]) -> HashMap<String, String> {
 #[test]
 fn from_config_rejects_missing_create_url() {
     let s = settings(&[("response_field", "key")]);
-    let err = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s);
+    let err = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s,
+    );
     assert!(err.is_err());
     assert!(err.unwrap_err().to_string().contains("create_url"));
 }
@@ -70,7 +72,12 @@ fn from_config_rejects_missing_create_url() {
 #[test]
 fn from_config_rejects_missing_response_field() {
     let s = settings(&[("create_url", "https://example.com/keys")]);
-    let err = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s);
+    let err = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s,
+    );
     assert!(err.is_err());
     assert!(err.unwrap_err().to_string().contains("response_field"));
 }
@@ -81,7 +88,13 @@ fn from_config_accepts_minimal_settings() {
         ("create_url", "https://example.com/keys"),
         ("response_field", "key"),
     ]);
-    assert!(GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).is_ok());
+    assert!(GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s
+    )
+    .is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -90,11 +103,14 @@ fn from_config_accepts_minimal_settings() {
 
 #[tokio::test]
 async fn preflight_rejects_invalid_create_url() {
-    let s = settings(&[
-        ("create_url", "not-a-url"),
-        ("response_field", "key"),
-    ]);
-    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
+    let s = settings(&[("create_url", "not-a-url"), ("response_field", "key")]);
+    let p = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s,
+    )
+    .unwrap();
     assert!(p.preflight().await.is_err());
 }
 
@@ -105,7 +121,13 @@ async fn preflight_accepts_valid_urls() {
         ("response_field", "key"),
         ("revoke_url", "https://api.example.com/keys/{old_key_id}"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s,
+    )
+    .unwrap();
     assert!(p.preflight().await.is_ok());
 }
 
@@ -119,7 +141,13 @@ async fn dry_run_mentions_create_url_and_response_field() {
         ("create_url", "https://api.example.com/keys"),
         ("response_field", "data.token"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s,
+    )
+    .unwrap();
     let plan = p.dry_run().await.unwrap();
     assert!(plan.contains("https://api.example.com/keys"));
     assert!(plan.contains("data.token"));
@@ -133,7 +161,13 @@ async fn dry_run_shows_revoke_url_when_configured() {
         ("response_field", "key"),
         ("revoke_url", "https://api.example.com/keys/{old_key_id}"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s,
+    )
+    .unwrap();
     let plan = p.dry_run().await.unwrap();
     assert!(plan.contains("https://api.example.com/keys/{old_key_id}"));
 }
@@ -158,7 +192,13 @@ async fn rotate_creates_key_and_returns_new_value() {
         ("create_url", &format!("{}/keys", server.url())),
         ("response_field", "key"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old-key".to_string()), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old-key".to_string()),
+        None,
+        &s,
+    )
+    .unwrap();
     let outcome = p.rotate().await.unwrap();
 
     assert_eq!(outcome.new_value.expose_secret(), "new-secret-value");
@@ -182,7 +222,13 @@ async fn rotate_extracts_nested_response_field() {
         ("response_field", "data.token"),
         ("id_field", "data.id"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old-key".to_string()), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old-key".to_string()),
+        None,
+        &s,
+    )
+    .unwrap();
     let outcome = p.rotate().await.unwrap();
 
     assert_eq!(outcome.new_value.expose_secret(), "nested-token");
@@ -210,13 +256,15 @@ async fn rotate_revokes_old_key_by_value() {
     let s = settings(&[
         ("create_url", &format!("{}/keys", server.url())),
         ("response_field", "key"),
-        (
-            "revoke_url",
-            &format!("{}/keys/{{old_key}}", server.url()),
-        ),
+        ("revoke_url", &format!("{}/keys/{{old_key}}", server.url())),
     ]);
-    let p =
-        GenericHttpProvider::from_config("test".into(), SecretString::from("old-key-value".to_string()), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old-key-value".to_string()),
+        None,
+        &s,
+    )
+    .unwrap();
     let outcome = p.rotate().await.unwrap();
 
     assert_eq!(outcome.new_value.expose_secret(), "brand-new-key");
@@ -279,7 +327,13 @@ async fn rotate_fails_on_non_2xx_create() {
         ("create_url", &format!("{}/keys", server.url())),
         ("response_field", "key"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("bad-key".to_string()), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("bad-key".to_string()),
+        None,
+        &s,
+    )
+    .unwrap();
     let err = p.rotate().await.unwrap_err();
     assert!(err.to_string().contains("401"));
 }
@@ -300,7 +354,13 @@ async fn rotate_fails_when_response_field_missing() {
         ("create_url", &format!("{}/keys", server.url())),
         ("response_field", "key"),
     ]);
-    let p = GenericHttpProvider::from_config("test".into(), SecretString::from("old".to_string()), None, &s).unwrap();
+    let p = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s,
+    )
+    .unwrap();
     let err = p.rotate().await.unwrap_err();
     assert!(err.to_string().contains("'key' not found"));
 }
@@ -350,9 +410,7 @@ async fn executor_writes_new_key_to_vault_and_logs() {
     assert_eq!(stored_id.expose_secret(), "tid-999");
 
     // Log file created
-    let log_path = store
-        .store_dir()
-        .join(".revvault/rotation-log.jsonl");
+    let log_path = store.store_dir().join(".revvault/rotation-log.jsonl");
     assert!(log_path.exists());
     let log = std::fs::read_to_string(&log_path).unwrap();
     assert!(log.contains("\"provider\":\"svc\""));
@@ -379,7 +437,9 @@ async fn executor_uses_stored_key_id_for_revocation() {
         .await;
 
     let (_dir, store) = setup_store();
-    store.set("credentials/svc/token", b"current-token").unwrap();
+    store
+        .set("credentials/svc/token", b"current-token")
+        .unwrap();
     // Simulate a previous rotation having stored the key ID
     store
         .set("credentials/svc/token-id", b"prev-id-from-vault")
@@ -406,4 +466,3 @@ async fn executor_uses_stored_key_id_for_revocation() {
     let new_key = store.get("credentials/svc/token").unwrap();
     assert_eq!(new_key.expose_secret(), "next-key");
 }
-

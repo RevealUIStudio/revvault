@@ -284,10 +284,7 @@ impl RotationProvider for GenericHttpProvider {
             // Substitute {old_key} with the key value, {old_key_id} with the stored ID.
             let url = url_template
                 .replace("{old_key}", self.current_key.expose_secret())
-                .replace(
-                    "{old_key_id}",
-                    self.old_key_id.as_deref().unwrap_or(""),
-                );
+                .replace("{old_key_id}", self.old_key_id.as_deref().unwrap_or(""));
 
             let revoke_req = match self.revoke_method.to_uppercase().as_str() {
                 "DELETE" => client.delete(&url),
@@ -307,9 +304,7 @@ impl RotationProvider for GenericHttpProvider {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
-                return Err(
-                    self.rotation_failed(format!("revoke returned {status}: {text}"))
-                );
+                return Err(self.rotation_failed(format!("revoke returned {status}: {text}")));
             }
         }
 

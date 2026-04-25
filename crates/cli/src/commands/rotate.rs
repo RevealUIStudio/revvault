@@ -22,7 +22,11 @@ pub async fn run(args: RotateArgs) -> anyhow::Result<()> {
         .providers
         .get(&args.provider)
         .ok_or_else(|| {
-            let known: Vec<&str> = rotation_config.providers.keys().map(String::as_str).collect();
+            let known: Vec<&str> = rotation_config
+                .providers
+                .keys()
+                .map(String::as_str)
+                .collect();
             if known.is_empty() {
                 anyhow::anyhow!(
                     "provider '{}' not found — create {} to configure providers",
