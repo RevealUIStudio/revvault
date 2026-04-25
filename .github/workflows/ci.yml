@@ -19,7 +19,10 @@ env:
 
 jobs:
   test:
-    name: cargo test (core + cli)
+    # NOTE: job name preserved as "Test (core + cli)" to match the required
+    # status check registered with branch protection. To rename safely,
+    # update the branch-protection rule first (Settings → Branches → main).
+    name: Test (core + cli)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
