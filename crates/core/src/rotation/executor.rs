@@ -12,8 +12,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use crate::error::Result;
 use crate::rotation::config::ProviderConfig;
 use crate::rotation::provider::RotationLogEntry;
-use crate::rotation::providers::GenericHttpProvider;
-use crate::rotation::RotationProvider;
+use crate::rotation::providers::build_provider;
 use crate::store::PassageStore;
 
 /// Vault path where a provider's key ID is stored between rotations.
@@ -49,8 +48,9 @@ pub async fn execute(
         .ok()
         .map(|s| s.expose_secret().to_string());
 
-    // 3. Build provider
-    let provider = GenericHttpProvider::from_config(
+    // 3. Build provider via factory dispatch on settings["type"].
+    let provider = build_provider(
+        store,
         provider_name.to_string(),
         SecretString::from(current_key.expose_secret().to_string()),
         old_key_id,
@@ -112,7 +112,8 @@ pub async fn dry_run(
         .ok()
         .map(|s| s.expose_secret().to_string());
 
-    let provider = GenericHttpProvider::from_config(
+    let provider = build_provider(
+        store,
         provider_name.to_string(),
         SecretString::from(current_key.expose_secret().to_string()),
         old_key_id,
