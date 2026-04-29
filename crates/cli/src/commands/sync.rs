@@ -9,6 +9,7 @@ use clap::Args;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
+use revvault_core::sync::vercel::{VercelClient, VercelEnvVar};
 use revvault_core::{Config, PassageStore};
 
 // ── CLI args ────────────────────────────────────────────────────────────────
@@ -68,25 +69,6 @@ fn default_targets() -> Vec<String> {
     ]
 }
 
-// ── Vercel API types ────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize)]
-struct VercelEnvVar {
-    id: Option<String>,
-    key: String,
-    value: Option<String>,
-    target: Vec<String>,
-    #[serde(rename = "type")]
-    var_type: Option<String>,
-    #[serde(rename = "configurationId")]
-    configuration_id: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct VercelEnvListResponse {
-    envs: Vec<VercelEnvVar>,
-}
-
 // ── Diff engine ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -102,146 +84,6 @@ struct DiffEntry {
     key: String,
     action: DiffAction,
     reason: Option<String>,
-}
-
-// ── Vercel API client ───────────────────────────────────────────────────────
-
-struct VercelClient {
-    token: String,
-    team_id: Option<String>,
-    client: reqwest::Client,
-}
-
-impl VercelClient {
-    fn new(token: String, team_id: Option<String>) -> Self {
-        Self {
-            token,
-            team_id,
-            client: reqwest::Client::new(),
-        }
-    }
-
-    fn base_url(&self, project_id: &str) -> String {
-        let mut url = format!("https://api.vercel.com/v10/projects/{}/env", project_id);
-        if let Some(ref team) = self.team_id {
-            url.push_str(&format!("?teamId={}", team));
-        }
-        url
-    }
-
-    async fn list_env_vars(&self, project_id: &str) -> anyhow::Result<Vec<VercelEnvVar>> {
-        let url = self.base_url(project_id);
-        let resp = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.token)
-            .send()
-            .await
-            .context("Failed to reach Vercel API")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            bail!("Vercel API returned {}: {}", status, body);
-        }
-
-        let data: VercelEnvListResponse = resp.json().await?;
-        Ok(data.envs)
-    }
-
-    async fn create_env_var(
-        &self,
-        project_id: &str,
-        key: &str,
-        value: &str,
-        targets: &[String],
-    ) -> anyhow::Result<()> {
-        let url = self.base_url(project_id);
-        let body = serde_json::json!({
-            "key": key,
-            "value": value,
-            "target": targets,
-            "type": "encrypted",
-        });
-
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.token)
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            bail!("Failed to create env var '{}': {} {}", key, status, body);
-        }
-        Ok(())
-    }
-
-    async fn update_env_var(
-        &self,
-        project_id: &str,
-        env_id: &str,
-        value: &str,
-        targets: &[String],
-    ) -> anyhow::Result<()> {
-        let mut url = format!(
-            "https://api.vercel.com/v10/projects/{}/env/{}",
-            project_id, env_id
-        );
-        if let Some(ref team) = self.team_id {
-            url.push_str(&format!("?teamId={}", team));
-        }
-
-        let body = serde_json::json!({
-            "value": value,
-            "target": targets,
-            "type": "encrypted",
-        });
-
-        let resp = self
-            .client
-            .patch(&url)
-            .bearer_auth(&self.token)
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            bail!("Failed to update env var '{}': {} {}", env_id, status, body);
-        }
-        Ok(())
-    }
-
-    /// Delete an env var. Reserved for future orphan cleanup mode.
-    #[allow(dead_code)]
-    async fn delete_env_var(&self, project_id: &str, env_id: &str) -> anyhow::Result<()> {
-        let mut url = format!(
-            "https://api.vercel.com/v10/projects/{}/env/{}",
-            project_id, env_id
-        );
-        if let Some(ref team) = self.team_id {
-            url.push_str(&format!("?teamId={}", team));
-        }
-
-        let resp = self
-            .client
-            .delete(&url)
-            .bearer_auth(&self.token)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            bail!("Failed to delete env var '{}': {} {}", env_id, status, body);
-        }
-        Ok(())
-    }
 }
 
 // ── Audit log ───────────────────────────────────────────────────────────────

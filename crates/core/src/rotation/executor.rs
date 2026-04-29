@@ -13,6 +13,7 @@ use crate::error::Result;
 use crate::rotation::config::ProviderConfig;
 use crate::rotation::provider::RotationLogEntry;
 use crate::rotation::providers::build_provider;
+use crate::rotation::sync_hook::{self, SyncLogEntry};
 use crate::store::PassageStore;
 
 /// Vault path where a provider's key ID is stored between rotations.
@@ -30,6 +31,7 @@ fn key_id_path(secret_path: &str) -> String {
 /// 4. Execute rotation (create new key, revoke old key)
 /// 5. Write new key to vault
 /// 6. Write new key ID to vault (if provider returned one)
+///    6.5. Apply post-rotation sync hook (if `[sync.*]` configured)
 /// 7. Append log entry
 pub async fn execute(
     store: &PassageStore,
@@ -77,12 +79,41 @@ pub async fn execute(
             .map_err(|e| anyhow::anyhow!("cannot write key ID to vault: {e}"))?;
     }
 
+    // 6.5. Post-rotation sync hook. The vault is already on the
+    // new value at this point; sync is best-effort and infallible
+    // at the function level (failures land as log entries). We
+    // surface partial failures to stderr so the operator knows to
+    // run `revvault sync vercel --apply` to retry.
+    let sync_log: Option<Vec<SyncLogEntry>> = if let Some(sync_cfg) = &provider_config.sync {
+        let entries =
+            sync_hook::apply_sync_after_rotation(store, sync_cfg, &outcome.new_value).await;
+        for row in &entries {
+            if row.status != "success" {
+                eprintln!(
+                    "  ⚠ Sync to {} failed for {}/{}: {}",
+                    row.target,
+                    row.env_var,
+                    row.vercel_target,
+                    row.error.as_deref().unwrap_or("(no error message)"),
+                );
+            }
+        }
+        if entries.iter().any(|r| r.status != "success") {
+            eprintln!("  Vault is correct but at least one sync target lagged. Retry with:");
+            eprintln!("    revvault sync vercel --apply --manifest <path>");
+        }
+        Some(entries)
+    } else {
+        None
+    };
+
     // 7. Append log entry
     append_log(
         store,
         provider_name,
         &provider_config.secret_path,
         &outcome.new_key_id,
+        sync_log,
     )?;
 
     eprintln!(
@@ -133,6 +164,7 @@ fn append_log(
     provider: &str,
     secret_path: &str,
     new_key_id: &Option<String>,
+    sync: Option<Vec<SyncLogEntry>>,
 ) -> anyhow::Result<()> {
     let log_dir = store.store_dir().join(".revvault");
     std::fs::create_dir_all(&log_dir)?;
@@ -149,6 +181,7 @@ fn append_log(
         secret_path: secret_path.to_string(),
         new_key_id: new_key_id.clone(),
         status: "success".into(),
+        sync,
     };
 
     let line = serde_json::to_string(&entry)?;
