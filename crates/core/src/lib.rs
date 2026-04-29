@@ -12,6 +12,7 @@ pub mod init;
 pub mod namespace;
 pub mod rotation;
 pub mod store;
+pub mod sync;
 
 pub use config::Config;
 pub use error::RevvaultError;

@@ -3,6 +3,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::rotation::sync_hook::SyncLogEntry;
 
 /// Outcome returned by a rotation provider after a successful rotation.
 /// Contains the new secret value; the executor writes it to the vault.
@@ -24,6 +25,11 @@ pub struct RotationLogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_key_id: Option<String>,
     pub status: String,
+    /// Per-target sync rows when `[providers.<name>.sync.*]` is
+    /// configured. `None` when no sync block was set; an empty
+    /// vector when sync ran but nothing to do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<Vec<SyncLogEntry>>,
 }
 
 /// Trait for secret rotation providers.

@@ -395,6 +395,7 @@ async fn executor_writes_new_key_to_vault_and_logs() {
             ("response_field", "token"),
             ("id_field", "tokenId"),
         ]),
+        sync: None,
     };
 
     executor::execute(&store, "svc", &provider_config)
@@ -456,6 +457,7 @@ async fn executor_uses_stored_key_id_for_revocation() {
                 &format!("{}/keys/{{old_key_id}}", server.url()),
             ),
         ]),
+        sync: None,
     };
 
     executor::execute(&store, "svc", &provider_config)
