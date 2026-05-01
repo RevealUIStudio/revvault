@@ -218,3 +218,44 @@ jobs:
         run: cargo install cargo-deny --locked
       - name: cargo deny check
         run: cargo deny check
+
+  doc:
+    # cargo-doc with -D warnings catches broken intra-doc links and
+    # missing doc items. Treats doc rot as a build error.
+    name: cargo doc -D warnings
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc -p revvault-core -p revvault-cli --no-deps
+        run: cargo doc -p revvault-core -p revvault-cli --no-deps
+
+  pnpm-audit:
+    # pnpm audit on the frontend deps. Equivalent of cargo-audit for the
+    # Node.js side. ADVISORY for now (continue-on-error: true) because
+    # the initial run on revvault frontend surfaced 4 existing
+    # vulnerabilities (2 moderate vite/picomatch, 2 high). Tracked
+    # separately for triage. Flip continue-on-error → false once
+    # those are addressed.
+    name: pnpm audit (frontend)
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: pnpm install (frozen lockfile)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: frontend
+      - name: pnpm audit --audit-level=high
+        run: pnpm audit --audit-level=high
+        working-directory: frontend
