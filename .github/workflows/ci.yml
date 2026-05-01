@@ -157,17 +157,9 @@ jobs:
     # the pre-existing branch-protection required check; this job adds
     # macOS and Windows legs without disturbing that.
     #
-    # ADVISORY for now (continue-on-error: true): the very first run of
-    # this matrix surfaced that revvault-cli unconditionally uses the
-    # Linux-only `memfd::Memfd` type, which fails to compile on macOS +
-    # Windows. Real portability bug, tracked separately. Until that's
-    # fixed, this job runs as informational signal — failure does not
-    # block PRs but the report is visible in the CI tab.
-    # Flip continue-on-error → false once memfd usage is gated behind
-    # `#[cfg(target_os = "linux")]` with an in-memory fallback for
-    # other platforms.
+    # As of the memfd portability fix (closes #23), this job is REQUIRED.
+    # The previous `continue-on-error: true` carve-out has been lifted.
     name: Test (core + cli) — ${{ matrix.os }}
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:

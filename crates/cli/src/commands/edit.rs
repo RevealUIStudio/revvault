@@ -10,6 +10,22 @@ use revvault_core::PassageStore;
 
 use crate::tui_editor;
 
+// Cross-platform handle for the optional memfd-backed temp storage.
+//
+// On Linux, `secure_tmp` may return a real `memfd::Memfd` (Strategy 2
+// below) for in-RAM storage that bypasses the filesystem entirely. The
+// kernel reclaims the memory when this handle is dropped.
+//
+// On macOS and Windows, that code path is gated out (`#[cfg(target_os =
+// "linux")]`), so the handle slot must exist in the type signature but
+// can never be populated. `std::convert::Infallible` is the empty enum,
+// so `Option<Infallible>` is a type that can only ever be `None` —
+// exactly the contract we want, with zero runtime cost.
+#[cfg(target_os = "linux")]
+type MemfdHandle = memfd::Memfd;
+#[cfg(not(target_os = "linux"))]
+type MemfdHandle = std::convert::Infallible;
+
 #[derive(Args)]
 pub struct EditArgs {
     /// Secret path to edit
@@ -108,10 +124,7 @@ pub fn run(args: EditArgs) -> anyhow::Result<()> {
 ///   3. macOS: `NamedTempFile` with `F_NOCACHE`
 ///   4. `config.tmpdir` / `TMPDIR` / OS default tempdir
 #[allow(unused_variables)]
-fn secure_tmp(
-    config: &TmpConfig,
-    content: &str,
-) -> anyhow::Result<(PathBuf, Option<memfd::Memfd>)> {
+fn secure_tmp(config: &TmpConfig, content: &str) -> anyhow::Result<(PathBuf, Option<MemfdHandle>)> {
     // --- Strategy 1: /dev/shm tmpfs (Linux / WSL2) ---
     // Preferred over memfd because GUI editors (Zed, VS Code) use atomic
     // temp-rename saves that require a real filesystem path.
@@ -190,7 +203,7 @@ fn secure_tmp(
 ///
 /// For a `memfd`, the kernel reclaims the memory when the last fd is closed
 /// (i.e., when `mfd` is dropped here).
-fn cleanup_tmp(mfd: Option<memfd::Memfd>, path: &std::path::Path) {
+fn cleanup_tmp(mfd: Option<MemfdHandle>, path: &std::path::Path) {
     if mfd.is_none() && path.exists() {
         if let Ok(meta) = std::fs::metadata(path) {
             let zeros = vec![0u8; meta.len() as usize];
