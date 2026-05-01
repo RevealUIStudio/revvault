@@ -235,13 +235,13 @@ jobs:
 
   pnpm-audit:
     # pnpm audit on the frontend deps. Equivalent of cargo-audit for the
-    # Node.js side. ADVISORY for now (continue-on-error: true) because
-    # the initial run on revvault frontend surfaced 4 existing
-    # vulnerabilities (2 moderate vite/picomatch, 2 high). Tracked
-    # separately for triage. Flip continue-on-error → false once
-    # those are addressed.
+    # Node.js side. REQUIRED as of the 2026-05-01 hardening marathon
+    # punch-list item #1: the four vite/picomatch advisories that
+    # originally pinned this to advisory mode were resolved by bumping
+    # vite 6.4.1 → 8.x (transitively pulling picomatch 4.0.3 → 4.0.4).
+    # Parent agent must add this job to required_status_checks
+    # (13 → 14 contexts) post-merge.
     name: pnpm audit (frontend)
-    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
