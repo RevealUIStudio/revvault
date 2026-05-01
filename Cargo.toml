@@ -30,7 +30,7 @@ nix = { version = "0.29", features = ["fs"] }
 libc = "0.2"
 zeroize = "1"
 which = "8"
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 tui-textarea = { version = "0.7", features = ["crossterm"] }
 
