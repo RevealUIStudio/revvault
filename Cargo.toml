@@ -5,11 +5,12 @@ members = ["crates/core", "crates/cli", "crates/tauri-app"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 license = "MIT"
 authors = ["Joshua Vaughn <joshua.v.dev@gmail.com>"]
 
 [workspace.dependencies]
-revvault-core = { path = "crates/core" }
+revvault-core = { version = "0.1", path = "crates/core" }
 age = { version = "0.11", features = ["armor"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -32,7 +33,7 @@ zeroize = "1"
 which = "8"
 ratatui = "0.30"
 crossterm = "0.29"
-ratatui-textarea = { git = "https://github.com/RevealUIStudio/ratatui-textarea", rev = "eeb7f7e37cf03fce57f52494d9fd6b25094b235f", features = ["crossterm"] }
+ratatui-textarea = { version = "0.9", git = "https://github.com/RevealUIStudio/ratatui-textarea", rev = "eeb7f7e37cf03fce57f52494d9fd6b25094b235f", features = ["crossterm"] }
 
 [profile.release]
 lto = true

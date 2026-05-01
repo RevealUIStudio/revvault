@@ -1,0 +1,69 @@
+# cargo-deny configuration for revvault.
+# Run locally: `cargo deny check` (after `cargo install cargo-deny --locked`).
+# CI: see `.github/workflows/ci.yml` job `cargo deny`.
+
+[graph]
+# revvault-tauri is excluded from CI test/clippy because it needs gtk on
+# the runner; mirror that scope here so deny doesn't fail on tauri-only
+# transitive deps that the CI environment would never touch.
+exclude = ["revvault-tauri"]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+# Use cargo-audit for the same RustSec database in a separate job; this
+# block makes cargo-deny's advisory pass strict but tolerant of known
+# unfixable transitive issues. Add specific RUSTSEC IDs to `ignore`
+# below when documented.
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "warn"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "ISC",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  "OpenSSL",
+  "CDLA-Permissive-2.0",
+]
+exceptions = []
+
+[[licenses.clarify]]
+# ring is dual-licensed but uses an unusual SPDX expression; clarify it
+# matches the ISC/OpenSSL/MIT triplet documented in its LICENSE file.
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Allow our security fork of ratatui-textarea (per HARDLINE rule
+# "Fork our own before someone else's fork"). Pinned by SHA in
+# Cargo.toml so an upstream rewrite cannot affect our build.
+allow-git = [
+  "https://github.com/RevealUIStudio/ratatui-textarea",
+]
