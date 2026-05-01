@@ -35,7 +35,6 @@ allow = [
   "ISC",
   "MPL-2.0",
   "Unicode-3.0",
-  "Unicode-DFS-2016",
   "Zlib",
   "CC0-1.0",
   "OpenSSL",
