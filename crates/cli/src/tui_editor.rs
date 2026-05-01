@@ -1,4 +1,4 @@
-//! Built-in TUI editor backed by ratatui + tui-textarea.
+//! Built-in TUI editor backed by ratatui + ratatui-textarea.
 //!
 //! Call [`edit`] to open the editor. Returns `Some(content)` on save,
 //! `None` if the user quit without saving.
@@ -16,7 +16,7 @@ use ratatui::{
     widgets::{Block, Paragraph},
     Terminal,
 };
-use tui_textarea::TextArea;
+use ratatui_textarea::TextArea;
 
 use std::io::{self, Stdout};
 
@@ -167,7 +167,7 @@ pub fn edit(secret_path: &str, content: &str) -> anyhow::Result<Option<String>> 
                 if pending_quit {
                     pending_quit = false;
                 }
-                // Forward the event to tui-textarea.
+                // Forward the event to ratatui-textarea.
                 textarea.input(ev);
             }
         }

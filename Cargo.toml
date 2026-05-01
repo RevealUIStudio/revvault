@@ -30,9 +30,9 @@ nix = { version = "0.31", features = ["fs"] }
 libc = "0.2"
 zeroize = "1"
 which = "8"
-ratatui = "0.29"
-crossterm = "0.28"
-tui-textarea = { version = "0.7", features = ["crossterm"] }
+ratatui = "0.30"
+crossterm = "0.29"
+ratatui-textarea = { git = "https://github.com/RevealUIStudio/ratatui-textarea", rev = "eeb7f7e37cf03fce57f52494d9fd6b25094b235f", features = ["crossterm"] }
 
 [profile.release]
 lto = true
