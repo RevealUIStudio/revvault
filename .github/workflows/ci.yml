@@ -150,3 +150,68 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test-cross-platform:
+    # Cross-platform regression coverage. The primary `test` job above
+    # stays ubuntu-only (and keeps the "Test (core + cli)" name) to match
+    # the pre-existing branch-protection required check; this job adds
+    # macOS and Windows legs without disturbing that.
+    name: Test (core + cli) — ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test -p revvault-core -p revvault-cli --all-targets
+        run: cargo test -p revvault-core -p revvault-cli --all-targets
+
+  msrv:
+    # Verify revvault still builds on its declared minimum supported Rust
+    # version. The MSRV is `rust-version = "1.88"` in the workspace
+    # Cargo.toml — driven by `time`, `darling_macro`, and `instability`
+    # transitive deps (ratatui-textarea claims 1.86 but our wider tree
+    # pushes the floor to 1.88). Bump together when any dep raises the
+    # floor; verify locally with `cargo +<msrv> build -p revvault-core
+    # -p revvault-cli`.
+    name: MSRV (rust 1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build -p revvault-core -p revvault-cli
+        run: cargo build -p revvault-core -p revvault-cli
+
+  audit:
+    # cargo-audit hits the RustSec advisory database. revvault is an
+    # age-encryption secret vault; shipping with a known CVE in any
+    # transitive crate is unacceptable.
+    name: cargo audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit
+        run: cargo audit
+
+  deny:
+    # cargo-deny checks: license compliance (allow-list in deny.toml),
+    # banned/duplicate deps, and source-registry/git allow-lists. Pairs
+    # with cargo-audit for full supply-chain hygiene.
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: cargo deny check
+        run: cargo deny check
