@@ -2,6 +2,7 @@ pub mod completions;
 pub mod delete;
 pub mod edit;
 pub mod export_env;
+pub mod generate;
 pub mod get;
 pub mod init;
 pub mod list;

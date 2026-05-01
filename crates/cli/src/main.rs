@@ -22,6 +22,8 @@ enum Commands {
     Get(commands::get::GetArgs),
     /// Encrypt a secret from stdin
     Set(commands::set::SetArgs),
+    /// Generate a strong random password (optionally store under a path)
+    Generate(commands::generate::GenerateArgs),
     /// List secrets in the store
     List(commands::list::ListArgs),
     /// Fuzzy search for secrets
@@ -54,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Init(args) => commands::init::run(args, json),
         Commands::Get(args) => commands::get::run(args, json),
         Commands::Set(args) => commands::set::run(args, json),
+        Commands::Generate(args) => commands::generate::run(args, json),
         Commands::List(args) => commands::list::run(args, json),
         Commands::Search(args) => commands::search::run(args, json),
         Commands::ExportEnv(args) => commands::export_env::run(args, json),
