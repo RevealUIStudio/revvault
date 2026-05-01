@@ -21,7 +21,17 @@ feature-depth = 1
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
-ignore = []
+ignore = [
+  # RUSTSEC-2026-0097: rand thread_rng is unsound when ALL of the following
+  # are true: (a) `log` and `thread_rng` features are enabled, (b) a custom
+  # logger is defined, (c) the custom logger calls TryRng methods on
+  # ThreadRng, (d) ThreadRng reseeds while called from the custom logger.
+  # revvault does not define a custom logger that touches thread_rng — we
+  # use rand::rng() only inside `revvault generate` (commands/generate.rs)
+  # for password character selection, never from inside a logger callback.
+  # Conditions (b)-(d) cannot be met in this codebase.
+  { id = "RUSTSEC-2026-0097", reason = "rand thread_rng unsoundness only triggers via custom logger; revvault has no such logger" },
+]
 
 [licenses]
 confidence-threshold = 0.8
