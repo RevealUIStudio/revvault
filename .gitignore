@@ -15,6 +15,7 @@ frontend/dist/
 .vscode/
 .zed/
 .idea/
+.cursor/
 
 # OS
 .DS_Store
