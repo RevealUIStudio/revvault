@@ -100,10 +100,22 @@ pub fn run(args: GenerateArgs, json_output: bool) -> anyhow::Result<()> {
         None
     };
 
-    if args.clip {
-        let mut clipboard = Clipboard::new()?;
-        clipboard.set_text(password.clone())?;
-    }
+    // Best-effort clipboard copy. We deliberately do NOT propagate clipboard
+    // failures with `?` because store.set/upsert above has already persisted
+    // the generated password — bailing here would exit non-zero with the
+    // password safely stored, leading callers to retry and hit `already
+    // exists` (or unintended rotation with --force). Surface the failure as
+    // a warning instead so the caller can still find the password.
+    let clipboard_error: Option<String> = if args.clip {
+        let result: anyhow::Result<()> = (|| {
+            let mut clipboard = Clipboard::new()?;
+            clipboard.set_text(password.clone())?;
+            Ok(())
+        })();
+        result.err().map(|e| e.to_string())
+    } else {
+        None
+    };
 
     let should_print = stored_path.is_none() || args.print;
 
@@ -114,7 +126,12 @@ pub fn run(args: GenerateArgs, json_output: bool) -> anyhow::Result<()> {
             out["path"] = json!(p);
         }
         if args.clip {
-            out["clipboard"] = json!(true);
+            if let Some(ref err) = clipboard_error {
+                out["clipboard"] = json!(false);
+                out["clipboard_warning"] = json!(err);
+            } else {
+                out["clipboard"] = json!(true);
+            }
         }
         if should_print {
             out["password"] = json!(password);
@@ -128,7 +145,20 @@ pub fn run(args: GenerateArgs, json_output: bool) -> anyhow::Result<()> {
             eprintln!("Stored: {p}");
         }
         if args.clip {
-            eprintln!("Copied to clipboard. Remember to clear it when done.");
+            if let Some(ref err) = clipboard_error {
+                let safe_location = if stored_path.is_some() {
+                    "stored in revvault"
+                } else if should_print {
+                    "printed above"
+                } else {
+                    "not displayed (re-run with --print to show)"
+                };
+                eprintln!(
+                    "Warning: clipboard copy failed ({err}); password is {safe_location} — copy manually."
+                );
+            } else {
+                eprintln!("Copied to clipboard. Remember to clear it when done.");
+            }
         }
     }
 
