@@ -1,0 +1,84 @@
+name: tauri-build
+
+# Cross-platform compile validation for the `revvault-tauri` desktop crate.
+#
+# The existing `ci.yml` `test` and `clippy` jobs intentionally exclude
+# `revvault-tauri` because it requires `libwebkit2gtk-4.1-dev` + `libgtk-3-dev`
+# on Linux runners. This workflow closes that gap by invoking
+# `cargo check -p revvault-tauri` on a 3-OS matrix (ubuntu/macos/windows) so
+# Tauri-side regressions are caught at PR time before they reach a release
+# pipeline. macOS uses native WebKit; Windows uses the OS-bundled WebView2
+# runtime — only Linux needs `apt-get install` of system deps.
+#
+# Branch-protection plan: only `Tauri build (ubuntu-latest)` is added to the
+# required set initially. macOS + Windows runs are visible in the PR check
+# panel but advisory until the workflow has soaked. Promotion to required
+# follows the pnpm audit / E1 precedent (revvault#27).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tauri-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tauri-build:
+    name: Tauri build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: pnpm/action-setup@903f9c1a6ebcba6cf41d87230be49611ac97822e # v6.0.3
+        with:
+          version: 10
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: pnpm install (frontend, frozen lockfile)
+        run: pnpm install --frozen-lockfile
+        working-directory: frontend
+
+      # Tauri's build script (`crates/tauri-app/build.rs` -> `tauri_build::build()`)
+      # validates that `frontendDist` (`../../frontend/dist` per tauri.conf.json)
+      # exists, even under `cargo check`. Build the frontend first so the
+      # check step can resolve the path.
+      - name: pnpm build (frontend, produces frontend/dist)
+        run: pnpm build
+        working-directory: frontend
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: tauri-${{ matrix.os }}
+
+      - name: cargo check -p revvault-tauri --locked
+        run: cargo check -p revvault-tauri --locked
