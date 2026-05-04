@@ -30,6 +30,13 @@ pub struct RotationLogEntry {
     /// vector when sync ran but nothing to do.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync: Option<Vec<SyncLogEntry>>,
+    /// Whether the post-rotation `verify` command passed.
+    /// `None` when no verify command was configured;
+    /// `Some(true)` when verify exited zero;
+    /// `Some(false)` when verify failed (the executor also
+    /// returns Err in that case so the cli exits non-zero).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
 }
 
 /// Trait for secret rotation providers.

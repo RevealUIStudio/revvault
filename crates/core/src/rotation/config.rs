@@ -28,6 +28,21 @@ pub struct ProviderConfig {
     /// failure semantics.
     #[serde(default)]
     pub sync: Option<SyncConfig>,
+    /// User-configurable shell commands to run after the vault
+    /// write + sync hook complete. Executed sequentially with
+    /// `sh -c`. Failure is **warn-only** — the rotation is not
+    /// aborted because the new key is already live in the vault.
+    /// Use `verify` for a strict gate.
+    #[serde(default)]
+    pub post_rotate: Vec<String>,
+    /// Optional strict verification command. When set, runs after
+    /// the `post_rotate` hooks. Exit-zero records `verified: true`
+    /// in the rotation log; **non-zero records `verified: false`
+    /// AND causes the executor to return Err** (cli exits non-zero).
+    /// Vault state is unchanged either way — the rotation already
+    /// landed.
+    #[serde(default)]
+    pub verify: Option<String>,
 }
 
 impl RotationConfig {
