@@ -602,14 +602,19 @@ async fn executor_runs_post_rotate_hooks_in_order() {
     let tmp = tempfile::tempdir().unwrap();
     let marker_a = tmp.path().join("a");
     let marker_b = tmp.path().join("b");
+    // Convert to forward-slashes + single-quote so the path round-trips through
+    // `sh -c` on both Unix and Git Bash on Windows (which mangles backslashes
+    // in unquoted argv).
+    let marker_a_sh = marker_a.to_string_lossy().replace('\\', "/");
+    let marker_b_sh = marker_b.to_string_lossy().replace('\\', "/");
 
     let provider_config = revvault_core::rotation::config::ProviderConfig {
         secret_path: "credentials/internal/seq-secret".into(),
         settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
         sync: None,
         post_rotate: vec![
-            format!("touch {}", marker_a.display()),
-            format!("touch {}", marker_b.display()),
+            format!("touch '{marker_a_sh}'"),
+            format!("touch '{marker_b_sh}'"),
         ],
         verify: None,
     };
@@ -743,12 +748,13 @@ async fn executor_verify_failure_with_post_rotate_still_runs_post_rotate() {
 
     let tmp = tempfile::tempdir().unwrap();
     let marker = tmp.path().join("ran");
+    let marker_sh = marker.to_string_lossy().replace('\\', "/");
 
     let provider_config = revvault_core::rotation::config::ProviderConfig {
         secret_path: "credentials/internal/seq-and-fail".into(),
         settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
         sync: None,
-        post_rotate: vec![format!("touch {}", marker.display())],
+        post_rotate: vec![format!("touch '{marker_sh}'")],
         verify: Some("false".into()), // exits 1 — strict failure
     };
 
