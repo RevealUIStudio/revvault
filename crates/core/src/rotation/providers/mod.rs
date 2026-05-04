@@ -5,16 +5,20 @@
 //! `settings["type"]` so the executor doesn't need to know which kind of
 //! provider it's running.
 //!
-//! - `type` absent or any value other than `"neon"` → [`GenericHttpProvider`]
+//! - `type` absent or any unrecognized value → [`GenericHttpProvider`]
 //!   (HTTP create + optional revoke pattern; works for stripe / vercel /
 //!   github tokens whose auth is the value being rotated).
 //! - `type = "neon"` → [`NeonProvider`] (Neon Postgres password reset; the
 //!   auth token is a separate vault secret read from `api_key_path`).
+//! - `type = "local"` → [`LocalGeneratorProvider`] (cryptographically
+//!   random value via `generator_type = hex32 | hex64 | uuid`; no network).
 
 pub mod http;
+pub mod local;
 pub mod neon;
 
 pub use http::GenericHttpProvider;
+pub use local::LocalGeneratorProvider;
 pub use neon::NeonProvider;
 
 use std::collections::HashMap;
@@ -32,6 +36,10 @@ use crate::store::PassageStore;
 ///   the vault path in `settings["api_key_path"]` so the rotated value
 ///   (the connection URI at `secret_path`) and the auth token can live in
 ///   different vault locations.
+/// - `"local"` — constructs a `LocalGeneratorProvider`. Reads
+///   `settings["generator_type"]` (one of `hex32` / `hex64` / `uuid`).
+///   `current_key` and `old_key_id` are unused — local secrets have no
+///   external lifecycle to track.
 /// - anything else (or absent) — constructs a `GenericHttpProvider` using
 ///   `current_key` as the auth token and the existing create/revoke URL
 ///   pattern.
@@ -66,6 +74,15 @@ pub fn build_provider(
                 api_key_owned,
                 settings,
             )?))
+        }
+        Some("local") => {
+            let gen_type = settings.get("generator_type").ok_or_else(|| {
+                RevvaultError::Other(anyhow::anyhow!(
+                    "provider '{}': type=local requires 'generator_type' setting (one of: hex32, hex64, uuid)",
+                    name
+                ))
+            })?;
+            Ok(Box::new(LocalGeneratorProvider::new(name, gen_type)?))
         }
         _ => Ok(Box::new(GenericHttpProvider::from_config(
             name,

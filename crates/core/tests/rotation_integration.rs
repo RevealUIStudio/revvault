@@ -396,6 +396,8 @@ async fn executor_writes_new_key_to_vault_and_logs() {
             ("id_field", "tokenId"),
         ]),
         sync: None,
+        post_rotate: vec![],
+        verify: None,
     };
 
     executor::execute(&store, "svc", &provider_config)
@@ -458,6 +460,8 @@ async fn executor_uses_stored_key_id_for_revocation() {
             ),
         ]),
         sync: None,
+        post_rotate: vec![],
+        verify: None,
     };
 
     executor::execute(&store, "svc", &provider_config)
@@ -467,4 +471,295 @@ async fn executor_uses_stored_key_id_for_revocation() {
     _revoke.assert_async().await;
     let new_key = store.get("credentials/svc/token").unwrap();
     assert_eq!(new_key.expose_secret(), "next-key");
+}
+
+// ---------------------------------------------------------------------------
+// LocalGeneratorProvider — type=local + generator_type
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn executor_local_hex32_writes_64_hex_chars_to_vault() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/session-secret".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+    };
+
+    executor::execute(&store, "internal", &provider_config)
+        .await
+        .unwrap();
+
+    let new_value = store.get("credentials/internal/session-secret").unwrap();
+    let s = new_value.expose_secret();
+    assert_eq!(s.len(), 64, "hex32 = 32 bytes = 64 hex chars");
+    assert!(
+        s.chars().all(|c| c.is_ascii_hexdigit()),
+        "all chars must be hex"
+    );
+}
+
+#[tokio::test]
+async fn executor_local_hex64_writes_128_hex_chars_to_vault() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/double-secret".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "hex64")]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+    };
+
+    executor::execute(&store, "internal", &provider_config)
+        .await
+        .unwrap();
+
+    let new_value = store.get("credentials/internal/double-secret").unwrap();
+    let s = new_value.expose_secret();
+    assert_eq!(s.len(), 128, "hex64 = 64 bytes = 128 hex chars");
+    assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+#[tokio::test]
+async fn executor_local_uuid_writes_uuid_v4_to_vault() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/req-id".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "uuid")]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+    };
+
+    executor::execute(&store, "internal", &provider_config)
+        .await
+        .unwrap();
+
+    let new_value = store.get("credentials/internal/req-id").unwrap();
+    let s = new_value.expose_secret();
+    // UUID v4 canonical: 8-4-4-4-12 = 36 chars including 4 hyphens
+    assert_eq!(s.len(), 36);
+    assert_eq!(s.chars().filter(|c| *c == '-').count(), 4);
+    // Version nibble must be '4' for UUID v4
+    let v_nibble = s.chars().nth(14).expect("uuid index 14 = version nibble");
+    assert_eq!(v_nibble, '4', "UUID v4 should have '4' at position 14");
+}
+
+#[tokio::test]
+async fn local_factory_rejects_missing_generator_type() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/x".into(),
+        settings: settings(&[("type", "local")]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+    };
+
+    let err = executor::execute(&store, "internal", &provider_config)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("generator_type"),
+        "error should mention missing generator_type setting: {err}"
+    );
+}
+
+#[tokio::test]
+async fn local_factory_rejects_unknown_generator_type() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/x".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "bogus")]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+    };
+
+    let err = executor::execute(&store, "internal", &provider_config)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("generator_type"));
+}
+
+// ---------------------------------------------------------------------------
+// post_rotate user hooks — warn-on-failure
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn executor_runs_post_rotate_hooks_in_order() {
+    let (_dir, store) = setup_store();
+
+    // Use temp files to verify hook execution order without depending on
+    // observable side effects in the vault itself.
+    let tmp = tempfile::tempdir().unwrap();
+    let marker_a = tmp.path().join("a");
+    let marker_b = tmp.path().join("b");
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/seq-secret".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
+        sync: None,
+        post_rotate: vec![
+            format!("touch {}", marker_a.display()),
+            format!("touch {}", marker_b.display()),
+        ],
+        verify: None,
+    };
+
+    executor::execute(&store, "seq", &provider_config)
+        .await
+        .unwrap();
+
+    assert!(marker_a.exists(), "first hook should have run");
+    assert!(marker_b.exists(), "second hook should have run");
+}
+
+#[tokio::test]
+async fn executor_post_rotate_failure_does_not_abort_rotation() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/hookfail-secret".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
+        sync: None,
+        post_rotate: vec!["false".into()], // exits 1
+        verify: None,
+    };
+
+    // post_rotate hook is warn-only, so this must succeed.
+    executor::execute(&store, "hookfail", &provider_config)
+        .await
+        .unwrap();
+
+    // And the vault must hold the rotated value.
+    let v = store.get("credentials/internal/hookfail-secret").unwrap();
+    assert_eq!(v.expose_secret().len(), 64, "hex32 was written");
+
+    // Log entry written successfully.
+    let log_path = store.store_dir().join(".revvault/rotation-log.jsonl");
+    assert!(log_path.exists());
+}
+
+// ---------------------------------------------------------------------------
+// verify gate — STRICT (Err on failure, log records verified=false)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn executor_verify_success_logs_verified_true() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/verify-ok".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
+        sync: None,
+        post_rotate: vec![],
+        verify: Some("true".into()), // exits 0
+    };
+
+    executor::execute(&store, "verify-ok", &provider_config)
+        .await
+        .unwrap();
+
+    let log_path = store.store_dir().join(".revvault/rotation-log.jsonl");
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(log.contains(r#""verified":true"#), "log was: {log}");
+}
+
+#[tokio::test]
+async fn executor_no_verify_omits_verified_field_in_log() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/no-verify".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+    };
+
+    executor::execute(&store, "no-verify", &provider_config)
+        .await
+        .unwrap();
+
+    let log_path = store.store_dir().join(".revvault/rotation-log.jsonl");
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    // skip_serializing_if = "Option::is_none" means the field must be absent,
+    // not present-as-null.
+    assert!(
+        !log.contains("\"verified\""),
+        "verified field should be omitted when None; log was: {log}"
+    );
+}
+
+#[tokio::test]
+async fn executor_verify_failure_returns_err_and_logs_verified_false() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/verify-fail".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
+        sync: None,
+        post_rotate: vec![],
+        verify: Some("false".into()), // exits 1
+    };
+
+    let err = executor::execute(&store, "verify-fail", &provider_config)
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("verify command exited non-zero"),
+        "error message should say verify failed: {msg}"
+    );
+
+    // Vault still has the rotated value (the rotation already landed).
+    let v = store.get("credentials/internal/verify-fail").unwrap();
+    assert_eq!(v.expose_secret().len(), 64);
+
+    // Log entry was written with verified=false BEFORE returning Err.
+    let log_path = store.store_dir().join(".revvault/rotation-log.jsonl");
+    assert!(
+        log_path.exists(),
+        "log file should be created on verify fail"
+    );
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        log.contains(r#""verified":false"#),
+        "log entry should record verified:false; log was: {log}"
+    );
+}
+
+#[tokio::test]
+async fn executor_verify_failure_with_post_rotate_still_runs_post_rotate() {
+    let (_dir, store) = setup_store();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("ran");
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/internal/seq-and-fail".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
+        sync: None,
+        post_rotate: vec![format!("touch {}", marker.display())],
+        verify: Some("false".into()), // exits 1 — strict failure
+    };
+
+    let _err = executor::execute(&store, "seq-and-fail", &provider_config)
+        .await
+        .unwrap_err();
+
+    // post_rotate runs BEFORE verify, so the marker should exist even though
+    // verify failed.
+    assert!(
+        marker.exists(),
+        "post_rotate (step 8) runs before verify (step 9), so marker should exist even when verify fails"
+    );
 }
