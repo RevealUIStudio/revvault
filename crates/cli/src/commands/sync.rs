@@ -59,6 +59,34 @@ struct ProjectSync {
     /// Skip these env var names (integration-managed, etc.)
     #[serde(default)]
     skip: Vec<String>,
+    /// Per-var path overrides. Maps a Vercel var name to an absolute vault
+    /// path. When a var is in this map, its vault path is the override
+    /// instead of `<vault_prefix>/<VAR_NAME>`.
+    ///
+    /// Use case: one canonical kebab-cased vault path (e.g.
+    /// `revealui/prod/db/postgres-url`) feeding multiple Vercel vars
+    /// (e.g. `POSTGRES_URL` + `DATABASE_URL`) across one or more projects,
+    /// without duplicating the value in the vault.
+    ///
+    /// TOML form:
+    /// ```toml
+    /// [projects.api.vars]
+    /// POSTGRES_URL = "revealui/prod/db/postgres-url"
+    /// DATABASE_URL = "revealui/prod/db/postgres-url"
+    /// ```
+    #[serde(default)]
+    vars: HashMap<String, String>,
+}
+
+impl ProjectSync {
+    /// Resolve the vault path for a given Vercel var name. Returns the override
+    /// if one is set in `vars`, otherwise the prefix-derived default.
+    fn vault_path_for(&self, var_name: &str) -> String {
+        self.vars
+            .get(var_name)
+            .cloned()
+            .unwrap_or_else(|| format!("{}/{}", self.vault_prefix, var_name))
+    }
 }
 
 fn default_targets() -> Vec<String> {
@@ -171,7 +199,7 @@ async fn pull_mode(
                 continue;
             }
 
-            let vault_path = format!("{}/{}", project_cfg.vault_prefix, var.key);
+            let vault_path = project_cfg.vault_path_for(&var.key);
             let value = var.value.as_deref().unwrap_or("");
 
             if !json_output {
@@ -241,36 +269,47 @@ async fn push_mode(
         let remote_map: HashMap<String, &VercelEnvVar> =
             remote_vars.iter().map(|v| (v.key.clone(), v)).collect();
 
-        // List vault secrets under this project's prefix
-        let vault_secrets = store.list(Some(&project_cfg.vault_prefix))?;
+        // Build the union of vars to sync: explicit overrides + everything
+        // under the project's vault_prefix. Overrides win — a var name in
+        // `vars` is never read from `<prefix>/<VAR_NAME>` even if both exist.
+        let mut vault_var_names: Vec<String> = Vec::new();
+        for var_name in project_cfg.vars.keys() {
+            vault_var_names.push(var_name.clone());
+        }
+        let prefix_secrets = store.list(Some(&project_cfg.vault_prefix))?;
+        for entry in &prefix_secrets {
+            let var_name = entry
+                .path
+                .strip_prefix(&format!("{}/", project_cfg.vault_prefix))
+                .unwrap_or(&entry.path)
+                .to_string();
+            if !project_cfg.vars.contains_key(&var_name) {
+                vault_var_names.push(var_name);
+            }
+        }
 
         let mut diff: Vec<DiffEntry> = Vec::new();
 
         // Compare vault → remote
-        for entry in &vault_secrets {
-            let key = entry
-                .path
-                .strip_prefix(&format!("{}/", project_cfg.vault_prefix))
-                .unwrap_or(&entry.path);
-
-            if project_cfg.skip.contains(&key.to_string()) {
+        for var_name in &vault_var_names {
+            if project_cfg.skip.contains(var_name) {
                 diff.push(DiffEntry {
-                    key: key.to_string(),
+                    key: var_name.clone(),
                     action: DiffAction::Skip,
                     reason: Some("in skip list".to_string()),
                 });
                 continue;
             }
 
-            if remote_map.contains_key(key) {
+            if remote_map.contains_key(var_name) {
                 diff.push(DiffEntry {
-                    key: key.to_string(),
+                    key: var_name.clone(),
                     action: DiffAction::Update,
                     reason: None,
                 });
             } else {
                 diff.push(DiffEntry {
-                    key: key.to_string(),
+                    key: var_name.clone(),
                     action: DiffAction::Add,
                     reason: None,
                 });
@@ -278,16 +317,6 @@ async fn push_mode(
         }
 
         // Detect orphans (in Vercel but not in vault)
-        let vault_keys: Vec<String> = vault_secrets
-            .iter()
-            .map(|e| {
-                e.path
-                    .strip_prefix(&format!("{}/", project_cfg.vault_prefix))
-                    .unwrap_or(&e.path)
-                    .to_string()
-            })
-            .collect();
-
         for remote_var in &remote_vars {
             if project_cfg.skip.contains(&remote_var.key) {
                 continue;
@@ -295,7 +324,7 @@ async fn push_mode(
             if remote_var.configuration_id.is_some() {
                 continue; // Integration-managed
             }
-            if !vault_keys.contains(&remote_var.key) {
+            if !vault_var_names.contains(&remote_var.key) {
                 diff.push(DiffEntry {
                     key: remote_var.key.clone(),
                     action: DiffAction::Orphan,
@@ -340,7 +369,7 @@ async fn push_mode(
         // Apply changes
         if apply {
             for entry in &diff {
-                let vault_path = format!("{}/{}", project_cfg.vault_prefix, entry.key);
+                let vault_path = project_cfg.vault_path_for(&entry.key);
                 match entry.action {
                     DiffAction::Add => {
                         let secret = store.get(&vault_path)?;
@@ -402,4 +431,99 @@ async fn push_mode(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project_with_vars(vars: HashMap<String, String>) -> ProjectSync {
+        ProjectSync {
+            project_id: "prj_test".to_string(),
+            vault_prefix: "revealui/vercel/api".to_string(),
+            targets: default_targets(),
+            skip: vec![],
+            vars,
+        }
+    }
+
+    #[test]
+    fn vault_path_for_returns_prefix_default_when_no_override() {
+        let cfg = project_with_vars(HashMap::new());
+        assert_eq!(
+            cfg.vault_path_for("STRIPE_SECRET_KEY"),
+            "revealui/vercel/api/STRIPE_SECRET_KEY"
+        );
+    }
+
+    #[test]
+    fn vault_path_for_returns_override_when_set() {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "POSTGRES_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        let cfg = project_with_vars(vars);
+        assert_eq!(
+            cfg.vault_path_for("POSTGRES_URL"),
+            "revealui/prod/db/postgres-url"
+        );
+        // Non-overridden var still uses the prefix-derived default.
+        assert_eq!(
+            cfg.vault_path_for("STRIPE_SECRET_KEY"),
+            "revealui/vercel/api/STRIPE_SECRET_KEY"
+        );
+    }
+
+    #[test]
+    fn vault_path_for_supports_two_vars_pointing_at_same_path() {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "POSTGRES_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        vars.insert(
+            "DATABASE_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        let cfg = project_with_vars(vars);
+        assert_eq!(
+            cfg.vault_path_for("POSTGRES_URL"),
+            cfg.vault_path_for("DATABASE_URL")
+        );
+    }
+
+    #[test]
+    fn manifest_parses_without_vars_field_for_backwards_compat() {
+        let toml_src = r#"
+            [projects.api]
+            project_id = "prj_test"
+            vault_prefix = "revealui/vercel/api"
+        "#;
+        let manifest: SyncManifest = toml::from_str(toml_src).unwrap();
+        let api = manifest.projects.get("api").unwrap();
+        assert!(api.vars.is_empty());
+        assert_eq!(api.vault_path_for("FOO"), "revealui/vercel/api/FOO");
+    }
+
+    #[test]
+    fn manifest_parses_with_vars_table() {
+        let toml_src = r#"
+            [projects.api]
+            project_id = "prj_test"
+            vault_prefix = "revealui/vercel/api"
+
+            [projects.api.vars]
+            POSTGRES_URL = "revealui/prod/db/postgres-url"
+            DATABASE_URL = "revealui/prod/db/postgres-url"
+        "#;
+        let manifest: SyncManifest = toml::from_str(toml_src).unwrap();
+        let api = manifest.projects.get("api").unwrap();
+        assert_eq!(api.vars.len(), 2);
+        assert_eq!(
+            api.vault_path_for("POSTGRES_URL"),
+            "revealui/prod/db/postgres-url"
+        );
+        assert_eq!(api.vault_path_for("FOO"), "revealui/vercel/api/FOO");
+    }
 }
