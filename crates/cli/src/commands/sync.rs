@@ -266,8 +266,19 @@ async fn push_mode(
 ) -> anyhow::Result<()> {
     for (project_name, project_cfg) in &manifest.projects {
         let remote_vars = client.list_env_vars(&project_cfg.project_id).await?;
-        let remote_map: HashMap<String, &VercelEnvVar> =
-            remote_vars.iter().map(|v| (v.key.clone(), v)).collect();
+        // Filter remote vars to those targeting at least one of our configured
+        // environments. Without this, when Vercel returns multiple entries with
+        // the same key (one per environment-target combination — Vercel splits
+        // them when the operator created them via separate add operations),
+        // the HashMap below collapses to whichever happens last in iteration,
+        // potentially picking a non-production entry. Updating that entry then
+        // tries to set its target to ours, conflicting with the existing
+        // production entry → 400 Bad Request.
+        let remote_map: HashMap<String, &VercelEnvVar> = remote_vars
+            .iter()
+            .filter(|v| project_cfg.targets.iter().any(|t| v.target.contains(t)))
+            .map(|v| (v.key.clone(), v))
+            .collect();
 
         // Build the union of vars to sync: explicit overrides + everything
         // under the project's vault_prefix. Overrides win — a var name in
@@ -316,15 +327,21 @@ async fn push_mode(
             }
         }
 
-        // Detect orphans (in Vercel but not in vault)
-        for remote_var in &remote_vars {
+        // Detect orphans (in Vercel but not in vault). Use the target-filtered
+        // map's keys so we only surface orphans for the environments we sync —
+        // a var that exists only on preview/development isn't an orphan from
+        // production's perspective.
+        let mut seen_orphans: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for remote_var in remote_map.values() {
             if project_cfg.skip.contains(&remote_var.key) {
                 continue;
             }
             if remote_var.configuration_id.is_some() {
                 continue; // Integration-managed
             }
-            if !vault_var_names.contains(&remote_var.key) {
+            if !vault_var_names.contains(&remote_var.key) && !seen_orphans.contains(&remote_var.key)
+            {
+                seen_orphans.insert(remote_var.key.clone());
                 diff.push(DiffEntry {
                     key: remote_var.key.clone(),
                     action: DiffAction::Orphan,
