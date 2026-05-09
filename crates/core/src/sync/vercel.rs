@@ -190,8 +190,8 @@ impl VercelClient {
     ///    if the body includes `"type": "encrypted"`. Omitting type lets
     ///    sensitive vars keep their flag during value rotation.
     ///
-    /// 2. **Multi-target preservation:** if a var has target=[production,
-    ///    preview], sending target=[production] in the PATCH would shrink
+    /// 2. **Multi-target preservation:** if a var has `target=[production,
+    ///    preview]`, sending `target=[production]` in the PATCH would shrink
     ///    its target list. Operators usually want value-only rotation,
     ///    not target changes, so omitting target keeps existing targets.
     ///
