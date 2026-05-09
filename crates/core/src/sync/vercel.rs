@@ -180,19 +180,36 @@ impl VercelClient {
 
     /// Update an existing env var by id (PATCH). The id is the
     /// opaque string returned by [`Self::list_env_vars`].
+    ///
+    /// Sends ONLY the `value` field in the PATCH body. Target list and
+    /// var type (encrypted/sensitive) are preserved by Vercel as-is.
+    /// This matters for two reasons:
+    ///
+    /// 1. **Sensitive-flagged vars:** Vercel's PATCH rejects with 400
+    ///    "You cannot change the type of a Sensitive Environment Variable"
+    ///    if the body includes `"type": "encrypted"`. Omitting type lets
+    ///    sensitive vars keep their flag during value rotation.
+    ///
+    /// 2. **Multi-target preservation:** if a var has target=[production,
+    ///    preview], sending target=[production] in the PATCH would shrink
+    ///    its target list. Operators usually want value-only rotation,
+    ///    not target changes, so omitting target keeps existing targets.
+    ///
+    /// `_targets` is retained in the signature for callsite stability but
+    /// no longer used in the body. A future PR may add a separate
+    /// `update_env_var_with_targets` for the rare case where intentional
+    /// target change is desired.
     pub async fn update_env_var(
         &self,
         project_id: &str,
         env_id: &str,
         value: &str,
-        targets: &[String],
+        _targets: &[String],
     ) -> anyhow::Result<()> {
         let url = self.item_url(project_id, env_id);
 
         let body = serde_json::json!({
             "value": value,
-            "target": targets,
-            "type": "encrypted",
         });
 
         let req = self.client.patch(&url).bearer_auth(&self.token).json(&body);
@@ -353,13 +370,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_env_var_patches_by_id() {
+    async fn update_env_var_patches_by_id_with_value_only() {
+        // Body must contain ONLY "value" — target + type are deliberately
+        // omitted so existing target list and Sensitive flag are preserved.
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("PATCH", "/projects/p/env/env_abc")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            .match_body(mockito::Matcher::Json(serde_json::json!({
                 "value": "v2",
-                "target": ["production"],
             })))
             .with_status(200)
             .with_body("{}")
