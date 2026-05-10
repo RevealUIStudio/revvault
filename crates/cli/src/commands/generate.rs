@@ -1,7 +1,7 @@
 use arboard::Clipboard;
 use clap::Args;
-use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::prelude::SliceRandom;
+use rand::RngExt;
 use serde_json::json;
 
 use revvault_core::Config;

@@ -4,7 +4,7 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use rand::RngCore;
+use rand::RngExt;
 use secrecy::SecretString;
 
 use crate::error::{Result, RevvaultError};
@@ -43,12 +43,12 @@ impl GeneratorType {
         match self {
             Self::Hex32 => {
                 let mut bytes = [0u8; 32];
-                rand::rng().fill_bytes(&mut bytes);
+                rand::rng().fill(&mut bytes[..]);
                 hex::encode(bytes)
             }
             Self::Hex64 => {
                 let mut bytes = [0u8; 64];
-                rand::rng().fill_bytes(&mut bytes);
+                rand::rng().fill(&mut bytes[..]);
                 hex::encode(bytes)
             }
             Self::Uuid => uuid::Uuid::new_v4().to_string(),
