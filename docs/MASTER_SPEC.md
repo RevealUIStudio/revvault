@@ -57,8 +57,10 @@ The frontend never touches `core` directly — it goes through `tauri-app` IPC. 
 | `revvault edit <path>` | Decrypt → open in `$EDITOR` → re-encrypt on save | `revvault edit credentials/stripe/secret-key` |
 | `revvault export-env [<prefix>]` | Materialize `.env`-shaped output for direnv | `revvault export-env revealui/dev/ > .envrc.secret` |
 | `revvault generate` | Generate a strong password (CSPRNG) | `revvault generate \| revvault set credentials/new` |
-| `revvault sync vercel <project>` | Sync a manifest-defined slice of vault to Vercel project env vars | `revvault sync vercel revealui-prod` |
-| `revvault sync vercel --dry-run <project>` | Show diff without writing | `revvault sync vercel --dry-run revealui-prod` |
+| `revvault sync vercel [--manifest <path>]` | Show diff between vault + Vercel env vars (default = dry-run; manifest defaults to `revvault-vercel.toml`) | `revvault sync vercel --manifest revvault-vercel.toml` |
+| `revvault sync vercel --apply [--manifest <path>]` | Actually write the diff to Vercel | `revvault sync vercel --apply` |
+| `revvault sync vercel --pull [--manifest <path>]` | Import existing Vercel vars into the vault | `revvault sync vercel --pull` |
+| `revvault sync vercel --token <token> ...` | Override Vercel API token (or set `VERCEL_TOKEN` env var) | `revvault sync vercel --apply --token $VERCEL_TOKEN` |
 
 ### Path conventions
 
@@ -136,19 +138,23 @@ The desktop app is currently used internally; public release is **Phase 2** in `
 Per [`reference_revvault_sync_schema_prefix_with_override`](file:///C:/Users/joshu/.claude/projects/--wsl-localhost-ubuntu-home-joshua-v-dev-revfleet/memory/reference_revvault_sync_schema_prefix_with_override.md):
 
 ```toml
-# revvault-sync.toml
-[projects.revealui-prod]
-vercel_project = "revealui-prod"
-vault_prefix = "revealui/prod/"   # secrets under this prefix sync as-is
-target = "production"             # vercel env target
+# revvault-vercel.toml — schema per crates/cli/src/commands/sync.rs ProjectSync
+team_id = "team_abc123"  # optional; for personal accounts omit
 
-# per-var overrides (lands via #PR feat/sync-per-var-path-override)
+[projects.revealui-prod]
+project_id = "prj_xyz789"          # Vercel project ID (required)
+vault_prefix = "revealui/prod/"    # secrets under this prefix sync as-is (required)
+targets = ["production"]           # env targets list (default: ["production", "preview", "development"])
+skip = ["VERCEL_AUTOMATION_TOKEN"] # var names to skip (integration-managed, etc.)
+
+# per-var overrides — feature shipped via feat/sync-per-var-path-override
+# Maps a Vercel var name to an absolute vault path; bypasses <vault_prefix>/<NAME> default
 [projects.revealui-prod.vars]
-DATABASE_URL = { vault_path = "revealui/prod/neon/postgres-url" }
-STRIPE_SECRET_KEY = { vault_path = "revealui/prod/stripe/secret-key" }
+DATABASE_URL = "revealui/prod/neon/postgres-url"
+STRIPE_SECRET_KEY = "revealui/prod/stripe/secret-key"
 ```
 
-The default behavior maps every `<vault_prefix>/<name>` to env var `NAME` in the target environment. The per-var `[vars]` table overrides individual mappings when default prefix-based naming is wrong.
+The default behavior maps every `<vault_prefix>/<name>` to env var `NAME` for each target in `targets`. The per-var `[projects.<slug>.vars]` table maps a Vercel var name to a literal vault path, overriding the default prefix-based naming.
 
 ### Sync semantics
 
