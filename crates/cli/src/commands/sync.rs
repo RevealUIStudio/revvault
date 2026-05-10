@@ -171,6 +171,53 @@ pub async fn run(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
 
 // ── Pull mode: import Vercel vars into vault ────────────────────────────────
 
+/// Pre-write check for vault-path collisions on pull. Multiple Vercel keys
+/// mapping to the same vault path is intentional aliasing (e.g.
+/// `POSTGRES_URL` + `DATABASE_URL` → `revealui/prod/db/postgres-url`), but if
+/// Vercel has drifted and those keys hold different values, naively writing
+/// each in API iteration order would silently overwrite the canonical secret
+/// with whichever entry the API returned last. Refuse the pull and surface
+/// the conflicting keys so the operator can resolve drift on Vercel before
+/// re-running.
+fn detect_path_collisions(
+    project_name: &str,
+    project_cfg: &ProjectSync,
+    remote_vars: &[VercelEnvVar],
+) -> anyhow::Result<()> {
+    let mut by_path: HashMap<String, Vec<(&str, &str)>> = HashMap::new();
+    for var in remote_vars {
+        if project_cfg.skip.contains(&var.key) {
+            continue;
+        }
+        if var.configuration_id.is_some() {
+            continue;
+        }
+        let vault_path = project_cfg.vault_path_for(&var.key);
+        let value = var.value.as_deref().unwrap_or("");
+        by_path
+            .entry(vault_path)
+            .or_default()
+            .push((var.key.as_str(), value));
+    }
+
+    for (path, members) in &by_path {
+        if members.len() < 2 {
+            continue;
+        }
+        let first_value = members[0].1;
+        if members.iter().any(|(_, v)| *v != first_value) {
+            let keys: Vec<&str> = members.iter().map(|(k, _)| *k).collect();
+            bail!(
+                "Vault path collision in project {project_name:?}: vault path {path:?} \
+                 is targeted by Vercel keys {keys:?} with differing values. Resolve the \
+                 drift on Vercel (or remove a per-var override in the manifest) before \
+                 re-running pull."
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn pull_mode(
     store: &PassageStore,
     client: &VercelClient,
@@ -180,6 +227,10 @@ async fn pull_mode(
 ) -> anyhow::Result<()> {
     for (project_name, project_cfg) in &manifest.projects {
         let remote_vars = client.list_env_vars(&project_cfg.project_id).await?;
+
+        // Bail before any writes if multiple Vercel keys map to the same
+        // vault path with differing values. See detect_path_collisions docs.
+        detect_path_collisions(project_name, project_cfg, &remote_vars)?;
 
         if !json_output {
             println!("\n\x1b[1m{}\x1b[0m (pull)", project_name);
@@ -542,5 +593,127 @@ mod tests {
             "revealui/prod/db/postgres-url"
         );
         assert_eq!(api.vault_path_for("FOO"), "revealui/vercel/api/FOO");
+    }
+
+    fn env_var(key: &str, value: &str) -> VercelEnvVar {
+        VercelEnvVar {
+            id: Some(format!("env_{key}")),
+            key: key.to_string(),
+            value: Some(value.to_string()),
+            target: vec!["production".to_string()],
+            var_type: Some("encrypted".to_string()),
+            configuration_id: None,
+        }
+    }
+
+    #[test]
+    fn detect_path_collisions_passes_when_each_key_maps_to_unique_path() {
+        let cfg = project_with_vars(HashMap::new());
+        let vars = vec![
+            env_var("STRIPE_SECRET_KEY", "sk_live_a"),
+            env_var("STRIPE_WEBHOOK_SECRET", "whsec_b"),
+        ];
+        assert!(detect_path_collisions("api", &cfg, &vars).is_ok());
+    }
+
+    #[test]
+    fn detect_path_collisions_passes_when_aliased_keys_have_matching_values() {
+        // POSTGRES_URL and DATABASE_URL both map to the same vault path AND
+        // hold the same Vercel value — intentional aliasing, no drift.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "POSTGRES_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        overrides.insert(
+            "DATABASE_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        let cfg = project_with_vars(overrides);
+        let same = "postgres://prod.neon/db";
+        let vars = vec![env_var("POSTGRES_URL", same), env_var("DATABASE_URL", same)];
+        assert!(detect_path_collisions("api", &cfg, &vars).is_ok());
+    }
+
+    #[test]
+    fn detect_path_collisions_errors_when_aliased_keys_have_drifted_values() {
+        // Same alias setup, but Vercel has drifted — POSTGRES_URL and
+        // DATABASE_URL hold different values. Pull must refuse rather than
+        // silently overwrite the canonical secret in API iteration order.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "POSTGRES_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        overrides.insert(
+            "DATABASE_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        let cfg = project_with_vars(overrides);
+        let vars = vec![
+            env_var("POSTGRES_URL", "postgres://prod.neon/db-A"),
+            env_var("DATABASE_URL", "postgres://prod.neon/db-B"),
+        ];
+        let err = detect_path_collisions("api", &cfg, &vars).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("revealui/prod/db/postgres-url"), "got: {msg}");
+        assert!(msg.contains("POSTGRES_URL"), "got: {msg}");
+        assert!(msg.contains("DATABASE_URL"), "got: {msg}");
+        assert!(msg.contains("differing values"), "got: {msg}");
+    }
+
+    #[test]
+    fn detect_path_collisions_ignores_skipped_keys() {
+        // If one of the colliding keys is in `skip`, it doesn't participate
+        // in the drift check (and won't be written either).
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "POSTGRES_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        overrides.insert(
+            "DATABASE_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        let cfg = ProjectSync {
+            project_id: "prj_test".to_string(),
+            vault_prefix: "revealui/vercel/api".to_string(),
+            targets: default_targets(),
+            skip: vec!["DATABASE_URL".to_string()],
+            vars: overrides,
+        };
+        let vars = vec![
+            env_var("POSTGRES_URL", "value-A"),
+            env_var("DATABASE_URL", "value-B"),
+        ];
+        assert!(detect_path_collisions("api", &cfg, &vars).is_ok());
+    }
+
+    #[test]
+    fn detect_path_collisions_ignores_integration_managed_keys() {
+        // Integration-managed env vars (configurationId set) are skipped
+        // during pull; they shouldn't trigger drift errors either.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "POSTGRES_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        overrides.insert(
+            "DATABASE_URL".to_string(),
+            "revealui/prod/db/postgres-url".to_string(),
+        );
+        let cfg = project_with_vars(overrides);
+        let vars = vec![
+            env_var("POSTGRES_URL", "value-A"),
+            VercelEnvVar {
+                id: Some("env_DATABASE_URL".to_string()),
+                key: "DATABASE_URL".to_string(),
+                value: Some("value-B".to_string()),
+                target: vec!["production".to_string()],
+                var_type: Some("encrypted".to_string()),
+                configuration_id: Some("integration_neon".to_string()),
+            },
+        ];
+        assert!(detect_path_collisions("api", &cfg, &vars).is_ok());
     }
 }
