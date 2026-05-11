@@ -259,3 +259,16 @@ jobs:
       - name: pnpm audit --audit-level=high
         run: pnpm audit --audit-level=high
         working-directory: frontend
+
+  private-leak-scan:
+    # Repo-wide leak scan for private filesystem paths, private repo
+    # refs, and credential-shaped strings. Complements the `no-hardcoded-
+    # user` GAP-116 anti-regression check (which only covers `joshu`)
+    # with a 10-pattern scanner ported from the revskills devkit.
+    name: Private Leak Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Scan for private paths and credentials
+        run: bash scripts/check-no-private-leaks.sh

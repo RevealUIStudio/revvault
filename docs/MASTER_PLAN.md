@@ -4,9 +4,9 @@
 **Status:** Active — production-grade for studio internal use; commercial offering wraps RevealUI Pro tier
 **Owner:** RevealUI Studio (`founder@revealui.com`)
 **Repo:** [RevealUIStudio/revvault](https://github.com/RevealUIStudio/revvault)
-**Fleet master index:** [`revealui-jv:docs/MASTER_INDEX.md`](https://github.com/RevealUIStudio/revealui-jv/blob/main/docs/MASTER_INDEX.md)
+**Fleet master index:** RevealUI Studio internal coordination hub (`MASTER_INDEX.md`, private).
 
-> Fleet-level cross-cutting plans live in [`revealui-jv:docs/MASTER_PLAN.md`](https://github.com/RevealUIStudio/revealui-jv/blob/main/docs/MASTER_PLAN.md). This file is RevVault-scoped only.
+> Fleet-level cross-cutting plans live in the internal coordination hub's `MASTER_PLAN.md`. This file is RevVault-scoped only.
 
 ---
 
@@ -64,7 +64,7 @@ The Pro-tier commercial offering wraps the RevealUI license: RevealUI Pro unlock
 
 ### `feat/sync-per-var-path-override` (current branch)
 
-Per-variable vault-path overrides for Vercel sync. Manifest schema gains `[projects.<slug>.vars]` table for case-by-case overrides where the default `[projects.<slug>] vault_prefix` is wrong. Surfacing reference: [`reference_revvault_sync_schema_prefix_with_override.md`](file:///C:/Users/joshu/.claude/projects/--wsl-localhost-ubuntu-home-joshua-v-dev-revfleet/memory/reference_revvault_sync_schema_prefix_with_override.md).
+Per-variable vault-path overrides for Vercel sync. Manifest schema gains `[projects.<slug>.vars]` table for case-by-case overrides where the default `[projects.<slug>] vault_prefix` is wrong. Surfacing reference: internal agent-memory entry `reference_revvault_sync_schema_prefix_with_override` (developer-local).
 
 **In scope:** schema parsing, conflict resolution between `vault_prefix` and per-var overrides, sync logic.
 **Out of scope:** UI for editing overrides, rotation hooks for overridden vars (defer to follow-on).
@@ -85,7 +85,7 @@ Per-variable vault-path overrides for Vercel sync. Manifest schema gains `[proje
 
 ## Roadmap
 
-Pre-1.0 (per [`versioning.md`](https://github.com/RevealUIStudio/revealui-jv/blob/main/.claude/rules/versioning.md)). Promotion to 1.0.0 requires real external consumers + stable contract across one release cycle.
+Pre-1.0 (per the fleet versioning convention, RevealUI Studio internal). Promotion to 1.0.0 requires real external consumers + stable contract across one release cycle.
 
 ### Phase 0 — Studio internal use (DONE)
 
@@ -126,5 +126,5 @@ Multi-identity vault model (single age recipient list per vault, multiple consum
 
 - [`docs/MASTER_SPEC.md`](./MASTER_SPEC.md) — surface area + architecture
 - [`README.md`](../README.md) — quick start + CLI command reference
-- [`revealui-jv:docs/MASTER_INDEX.md`](https://github.com/RevealUIStudio/revealui-jv/blob/main/docs/MASTER_INDEX.md) — fleet-level navigation
+- Fleet master index (`MASTER_INDEX.md` in the RevealUI Studio internal coordination hub) — fleet-level navigation
 - [`revealui:.claude/rules/secrets.md`](https://github.com/RevealUIStudio/revealui/blob/main/.claude/rules/secrets.md) — fleet-wide secrets convention (RevVault as source of truth)

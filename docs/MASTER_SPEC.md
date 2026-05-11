@@ -135,7 +135,7 @@ The desktop app is currently used internally; public release is **Phase 2** in `
 
 ### Vercel sync manifest
 
-Per [`reference_revvault_sync_schema_prefix_with_override`](file:///C:/Users/joshu/.claude/projects/--wsl-localhost-ubuntu-home-joshua-v-dev-revfleet/memory/reference_revvault_sync_schema_prefix_with_override.md):
+Per the internal agent-memory entry `reference_revvault_sync_schema_prefix_with_override` (developer-local):
 
 ```toml
 # revvault-vercel.toml — schema per crates/cli/src/commands/sync.rs ProjectSync
@@ -189,7 +189,7 @@ Per-credential-type rotation runbook lives at [`revealui:docs/CREDENTIAL-ROTATIO
 
 ## Versioning
 
-Pre-1.0 per [`versioning.md`](https://github.com/RevealUIStudio/revealui-jv/blob/main/.claude/rules/versioning.md). Cargo workspace crates use independent SemVer. Promotion to 1.0.0 gated on real external consumers + stable contract across at least one release cycle.
+Pre-1.0 per the fleet versioning convention (RevealUI Studio internal). Cargo workspace crates use independent SemVer. Promotion to 1.0.0 gated on real external consumers + stable contract across at least one release cycle.
 
 ---
 
@@ -213,5 +213,5 @@ No reverse dependency: RevVault has no awareness of consumer products. The contr
 
 - [`docs/MASTER_PLAN.md`](./MASTER_PLAN.md) — current status, phases, owner actions
 - [`README.md`](../README.md) — quick start + setup
-- [`revealui-jv:docs/MASTER_INDEX.md`](https://github.com/RevealUIStudio/revealui-jv/blob/main/docs/MASTER_INDEX.md) — fleet-level navigation
+- Fleet master index (`MASTER_INDEX.md` in the RevealUI Studio internal coordination hub) — fleet-level navigation
 - [`revealui:.claude/rules/secrets.md`](https://github.com/RevealUIStudio/revealui/blob/main/.claude/rules/secrets.md) — fleet-wide RevVault-first secrets rule
