@@ -52,20 +52,27 @@ EXCLUDE_DIRS=(node_modules .git dist build .next .turbo .pnpm coverage target .d
 EXCLUDE_FILES=(
   pnpm-lock.yaml package-lock.json yarn.lock Cargo.lock
   check-no-private-leaks.sh
-  .leakignore
   .git
   '*.png' '*.jpg' '*.jpeg' '*.gif' '*.webp' '*.pdf' '*.zip' '*.tar.gz' '*.tgz'
   '*.ico' '*.woff' '*.woff2' '*.ttf' '*.otf'
 )
 
-# Note: `settings.local.json` was intentionally NOT added to EXCLUDE_FILES.
-# A basename exclusion would silently allow accidentally-committed local
-# settings files (a likely place for team_/prj_/$HOME/credential leaks) to
-# bypass this gate entirely. Per Codex P2 review on revdev#55: consuming
-# repos must keep `.claude/` in their .gitignore so settings.local.json
-# never lands in a checkout. Local pre-push false-positives (when a dev
-# has a tracked-but-shouldnt-be settings.local.json) are intentional —
-# they signal a gitignore gap to fix.
+# Note: `settings.local.json` and `.leakignore` are intentionally NOT in
+# EXCLUDE_FILES — both were flagged in Codex P2 review on revdev#55:
+#
+#   - settings.local.json: a basename exclusion would silently allow an
+#     accidentally-committed local settings file (a likely place for
+#     team_/prj_/$HOME/credential leaks) to bypass this gate entirely.
+#     Consuming repos must keep `.claude/` in .gitignore so the file
+#     never lands in a checkout.
+#
+#   - .leakignore: excluding the allowlist file means any private path
+#     or credential pasted into an entry or reason comment is never
+#     examined, even though the file ships in the public repo. Now
+#     scanned — keep .leakignore entries to path-globs + tags only.
+#
+# Local pre-push false-positives in either case are intentional: they
+# signal a configuration gap to fix, not a scanner bug.
 
 if ! command -v grep >/dev/null 2>&1; then
   echo "[leak-check] error: grep not found on PATH" >&2
