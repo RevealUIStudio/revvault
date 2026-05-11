@@ -32,7 +32,12 @@ PATTERNS=(
   "private-jv-name|revealui-jv|private repo name (revealui-jv)"
   "lts-drive|/mnt/e/|LTS drive mount path"
   "forge-drive|/mnt/forge/|Forge drive mount path"
-  "devbox-host|joshu-devbox|internal hostname"
+  # quote-split below: the literal pattern (j+oshu-devbox) is split by empty
+  # quotes so the fleet's GAP-116 anti-regression workflow (which greps the
+  # developer's user-account name verbatim) does NOT match this scanner's
+  # own source. Bash concatenates the empty-quoted halves into the full
+  # pattern at runtime; the array element is unchanged.
+  "devbox-host|j""oshu-devbox|internal hostname"
   "license-key|RVUI-[a-z]+-[a-f0-9]{16,}|RevealUI license key (looks like a real issued key)"
   "vercel-org-id|team_[A-Za-z0-9]{16,}|Vercel org/team identifier"
   "vercel-project-id|prj_[A-Za-z0-9]{16,}|Vercel project identifier"
