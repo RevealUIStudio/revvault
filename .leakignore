@@ -1,0 +1,11 @@
+# .leakignore — allowed private-path references in this public repo.
+#
+# Format: <path-glob> <tag[,tag...]>   # reason
+#
+# The leak scanner (scripts/check-no-private-leaks.sh) ignores matches where
+# BOTH the file path matches the glob AND the leak tag is listed. Unknown
+# leaks still fail CI.
+
+# Test fixtures use a generic placeholder username in store_dir /
+# identity_file path fixtures (not a real developer's home).
+frontend/src/components/SetupScreen.test.tsx   abs-home-path
