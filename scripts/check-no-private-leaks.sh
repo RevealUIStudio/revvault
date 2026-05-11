@@ -21,6 +21,17 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCAN_PATHS=("$@")
 [[ ${#SCAN_PATHS[@]} -eq 0 ]] && SCAN_PATHS=("$REPO_ROOT")
 
+# Validate scan paths up front. grep silently treats a missing path as
+# "no matches" and the script would otherwise exit 0 on a typo'd path,
+# silently skipping the requested scan (Codex P2 finding on revcon#9).
+for _path in "${SCAN_PATHS[@]}"; do
+  if [[ ! -e "$_path" ]]; then
+    echo "[leak-check] error: scan path not found: $_path" >&2
+    exit 2
+  fi
+done
+unset _path
+
 # --- Patterns that must never appear in public content ---
 #
 # Each entry: tag|ERE_regex|reason
@@ -150,8 +161,14 @@ for entry in "${PATTERNS[@]}"; do
     line="${rest_%%:*}"
     content="${rest_#*:}"
 
-    # Resolve relative path for .leakignore matching.
+    # Resolve relative path for .leakignore matching. Normalize both the
+    # absolute-prefix form (default no-arg invocation, grep reports
+    # /home/.../repo/file) AND the explicit-relative-path form (e.g.
+    # `bash check-no-private-leaks.sh .`, grep reports ./file). Codex P2
+    # finding on revvault#45: without the `./` strip, .leakignore entries
+    # like `frontend/src/foo.ts` failed to match `./frontend/src/foo.ts`.
     rel_path="${file#$REPO_ROOT/}"
+    rel_path="${rel_path#./}"
     if is_ignored "$rel_path" "$tag"; then
       continue
     fi
