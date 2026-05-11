@@ -53,11 +53,19 @@ EXCLUDE_FILES=(
   pnpm-lock.yaml package-lock.json yarn.lock Cargo.lock
   check-no-private-leaks.sh
   .leakignore
-  settings.local.json
   .git
   '*.png' '*.jpg' '*.jpeg' '*.gif' '*.webp' '*.pdf' '*.zip' '*.tar.gz' '*.tgz'
   '*.ico' '*.woff' '*.woff2' '*.ttf' '*.otf'
 )
+
+# Note: `settings.local.json` was intentionally NOT added to EXCLUDE_FILES.
+# A basename exclusion would silently allow accidentally-committed local
+# settings files (a likely place for team_/prj_/$HOME/credential leaks) to
+# bypass this gate entirely. Per Codex P2 review on revdev#55: consuming
+# repos must keep `.claude/` in their .gitignore so settings.local.json
+# never lands in a checkout. Local pre-push false-positives (when a dev
+# has a tracked-but-shouldnt-be settings.local.json) are intentional —
+# they signal a gitignore gap to fix.
 
 if ! command -v grep >/dev/null 2>&1; then
   echo "[leak-check] error: grep not found on PATH" >&2
