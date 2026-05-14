@@ -304,7 +304,7 @@ mod tests {
         let manifest_content = std::fs::read_to_string(&manifest).unwrap();
         let manifest_parsed: SyncManifest = toml::from_str(&manifest_content).unwrap();
 
-        for (_project, project_cfg) in &manifest_parsed.projects {
+        for project_cfg in manifest_parsed.projects.values() {
             for (var_name, entry) in &project_cfg.vars {
                 let secret = store.get(entry.path()).unwrap();
                 let raw = {
@@ -344,8 +344,8 @@ mod tests {
         let manifest_parsed: SyncManifest = toml::from_str(&manifest_content).unwrap();
 
         let mut found_failure = false;
-        for (_project, project_cfg) in &manifest_parsed.projects {
-            for (_, entry) in &project_cfg.vars {
+        for project_cfg in manifest_parsed.projects.values() {
+            for entry in project_cfg.vars.values() {
                 let secret = store.get(entry.path()).unwrap();
                 let raw = {
                     use secrecy::ExposeSecret;
