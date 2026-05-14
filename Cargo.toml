@@ -3,14 +3,14 @@ resolver = "2"
 members = ["crates/core", "crates/cli", "crates/tauri-app"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
 authors = ["Joshua Vaughn <joshua.v.dev@gmail.com>"]
 
 [workspace.dependencies]
-revvault-core = { version = "0.1", path = "crates/core" }
+revvault-core = { version = "0.2", path = "crates/core" }
 age = { version = "0.11", features = ["armor"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

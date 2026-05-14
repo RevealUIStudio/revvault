@@ -16,11 +16,20 @@
 //! (vault is the source of truth, Vercel is downstream). Recovery
 //! after a partial failure is documented at the message site:
 //! `revvault sync vercel --apply --manifest <path>`.
+//!
+//! # Shape validation
+//!
+//! Before sending a value to Vercel, `push_to_vercel` validates it against
+//! the universal structural checks (empty / null-literal / Vercel-envelope).
+//! A failing check logs a `"drop-shape"` entry and skips the API call rather
+//! than propagating a bad value. This catches misbehaving rotation providers
+//! (e.g., a Neon API failure that returns an empty body).
 
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 
 use crate::store::PassageStore;
+use crate::sync::shape::{self, Shape, ShapeViolation};
 use crate::sync::vercel::VercelClient;
 
 /// Per-provider sync block. Today only Vercel is supported; this
@@ -69,43 +78,69 @@ fn default_targets() -> Vec<String> {
 /// One row in the per-rotation sync audit. The executor folds the
 /// vector returned by [`apply_sync_after_rotation`] into the rotation
 /// log entry; the JSONL log captures `target`, `status`,
-/// per-env-var and per-vercel-target detail, and an optional error
-/// reason.
+/// per-env-var and per-vercel-target detail, the value shape category,
+/// and an optional error reason.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncLogEntry {
     /// Sync target identifier (currently always `"vercel"`).
     pub target: String,
-    /// One of `"success"`, `"failed"`, `"skipped"`.
+    /// One of `"success"`, `"failed"`, `"skipped"`, `"drop-shape"`.
     pub status: String,
     /// Env-var name on the remote target.
     pub env_var: String,
     /// Vercel target environment (e.g. `"production"`,
     /// `"preview"`).
     pub vercel_target: String,
-    /// Failure reason when `status == "failed"`. Never includes
-    /// secret values.
+    /// Shape category of the value (e.g. `"postgres-url"`, `"stripe-key"`,
+    /// `"vercel-envelope"`, `"empty"`). Never includes the value itself.
+    pub value_shape: String,
+    /// Failure reason when `status == "failed"` or `"drop-shape"`. Never
+    /// includes secret values.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 impl SyncLogEntry {
-    fn success(env_var: &str, vercel_target: &str) -> Self {
+    fn success(env_var: &str, vercel_target: &str, value_shape: &str) -> Self {
         Self {
             target: "vercel".into(),
             status: "success".into(),
             env_var: env_var.to_string(),
             vercel_target: vercel_target.to_string(),
+            value_shape: value_shape.to_string(),
             error: None,
         }
     }
 
-    fn failed(env_var: &str, vercel_target: &str, error: impl Into<String>) -> Self {
+    fn failed(
+        env_var: &str,
+        vercel_target: &str,
+        value_shape: &str,
+        error: impl Into<String>,
+    ) -> Self {
         Self {
             target: "vercel".into(),
             status: "failed".into(),
             env_var: env_var.to_string(),
             vercel_target: vercel_target.to_string(),
+            value_shape: value_shape.to_string(),
             error: Some(error.into()),
+        }
+    }
+
+    fn drop_shape(
+        env_var: &str,
+        vercel_target: &str,
+        value_shape: &str,
+        violation: &ShapeViolation,
+    ) -> Self {
+        Self {
+            target: "vercel".into(),
+            status: "drop-shape".into(),
+            env_var: env_var.to_string(),
+            vercel_target: vercel_target.to_string(),
+            value_shape: value_shape.to_string(),
+            error: Some(violation.to_string()),
         }
     }
 }
@@ -152,6 +187,26 @@ async fn push_to_vercel(
     base_url_override: Option<&str>,
     log: &mut Vec<SyncLogEntry>,
 ) {
+    let value_str = new_value.expose_secret();
+    let value_shape = shape::classify(value_str);
+
+    // Universal shape guard: refuse to propagate empty / null / envelope
+    // values to Vercel regardless of declared shape. A misbehaving rotation
+    // provider (e.g., Neon returning an empty HTTP body) hits this guard.
+    if let Err(violation) = shape::check(value_str, Shape::Any) {
+        for ev in &vercel_ref.env_vars {
+            for t in &ev.targets {
+                log.push(SyncLogEntry::drop_shape(
+                    &ev.name,
+                    t,
+                    &value_shape,
+                    &violation,
+                ));
+            }
+        }
+        return;
+    }
+
     // Fetch the Vercel API token from the vault. If we can't read
     // it, the rotation succeeded but no sync can run — record one
     // failed entry per env-var × target.
@@ -163,6 +218,7 @@ async fn push_to_vercel(
                     log.push(SyncLogEntry::failed(
                         &ev.name,
                         t,
+                        &value_shape,
                         format!(
                             "cannot read Vercel API token at '{}': {}",
                             vercel_ref.api_token_path, e
@@ -189,6 +245,7 @@ async fn push_to_vercel(
                     log.push(SyncLogEntry::failed(
                         &ev.name,
                         t,
+                        &value_shape,
                         format!("Vercel list_env_vars failed: {e}"),
                     ));
                 }
@@ -197,13 +254,10 @@ async fn push_to_vercel(
         }
     };
 
-    let value_str = new_value.expose_secret();
-
     for ev in &vercel_ref.env_vars {
         // Find an existing row for this env-var name. Vercel allows
         // multiple rows per name (different `target` arrays); for
-        // sync we update the first match and create otherwise. The
-        // standalone CLI tool uses the same heuristic.
+        // sync we update the first match and create otherwise.
         let existing_id = existing
             .iter()
             .find(|x| x.key == ev.name)
@@ -225,13 +279,18 @@ async fn push_to_vercel(
         match result {
             Ok(()) => {
                 for t in &ev.targets {
-                    log.push(SyncLogEntry::success(&ev.name, t));
+                    log.push(SyncLogEntry::success(&ev.name, t, &value_shape));
                 }
             }
             Err(e) => {
                 let reason = format!("{e}");
                 for t in &ev.targets {
-                    log.push(SyncLogEntry::failed(&ev.name, t, reason.clone()));
+                    log.push(SyncLogEntry::failed(
+                        &ev.name,
+                        t,
+                        &value_shape,
+                        reason.clone(),
+                    ));
                 }
             }
         }
@@ -288,21 +347,31 @@ mod tests {
     }
 
     #[test]
-    fn sync_log_entry_serializes_compactly_when_success() {
-        let e = SyncLogEntry::success("POSTGRES_URL", "production");
+    fn sync_log_entry_serializes_with_value_shape() {
+        let e = SyncLogEntry::success("POSTGRES_URL", "production", "postgres-url");
         let json = serde_json::to_string(&e).unwrap();
-        // No `error` field when None — keeps the JSONL log readable.
         assert!(!json.contains("error"));
         assert!(json.contains(r#""status":"success""#));
         assert!(json.contains(r#""env_var":"POSTGRES_URL""#));
+        assert!(json.contains(r#""value_shape":"postgres-url""#));
     }
 
     #[test]
     fn sync_log_entry_includes_error_when_failed() {
-        let e = SyncLogEntry::failed("POSTGRES_URL", "production", "boom");
+        let e = SyncLogEntry::failed("POSTGRES_URL", "production", "unknown", "boom");
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains(r#""status":"failed""#));
         assert!(json.contains(r#""error":"boom""#));
+        assert!(json.contains(r#""value_shape":"unknown""#));
+    }
+
+    #[test]
+    fn sync_log_entry_drop_shape_records_violation() {
+        let v = ShapeViolation::Empty;
+        let e = SyncLogEntry::drop_shape("POSTGRES_URL", "production", "empty", &v);
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""status":"drop-shape""#));
+        assert!(json.contains(r#""value_shape":"empty""#));
     }
 
     /// Create a temp store with a generated age identity. Mirrors the
@@ -339,11 +408,6 @@ mod tests {
         (dir, store)
     }
 
-    // Integration: drive apply_sync_after_rotation_inner against a
-    // mockito Vercel + a tempfile-backed PassageStore. Verifies the
-    // full happy-path fan-out — list, update existing (one
-    // env-var), create missing (the second), one log row per
-    // env-var × target.
     #[tokio::test]
     async fn apply_sync_pushes_two_env_vars_one_existing_one_new() {
         let (_dir, store) = setup_temp_store();
@@ -402,11 +466,11 @@ mod tests {
         )
         .await;
 
-        // 2 entries (POSTGRES_URL × 2 targets) + 1 entry (POSTGRES_NEW × 1)
         assert_eq!(log.len(), 3);
         for row in &log {
             assert_eq!(row.target, "vercel");
             assert_eq!(row.status, "success", "row failed: {row:?}");
+            assert_eq!(row.value_shape, "postgres-url");
         }
 
         m_list.assert_async().await;
@@ -417,7 +481,6 @@ mod tests {
     #[tokio::test]
     async fn apply_sync_records_failure_when_token_missing() {
         let (_dir, store) = setup_temp_store();
-        // Note: no api-token written.
 
         let sync = SyncConfig {
             vercel: Some(VercelSyncRef {
@@ -442,5 +505,63 @@ mod tests {
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].status, "failed");
         assert!(log[0].error.as_deref().unwrap_or("").contains("api-token"));
+    }
+
+    /// Proves the bug class: a rotation provider returning an empty string
+    /// must NEVER be pushed to Vercel.
+    #[tokio::test]
+    async fn sync_hook_refuses_empty_rotation_output() {
+        let (_dir, store) = setup_temp_store();
+        store
+            .upsert("credentials/vercel/api-token", b"token-x")
+            .unwrap();
+
+        let sync = SyncConfig {
+            vercel: Some(VercelSyncRef {
+                api_token_path: "credentials/vercel/api-token".into(),
+                project_id: "prj".into(),
+                team_id: None,
+                env_vars: vec![VercelEnvVarRef {
+                    name: "POSTGRES_URL".into(),
+                    targets: vec!["production".into()],
+                }],
+            }),
+        };
+
+        let log =
+            apply_sync_after_rotation_inner(&store, &sync, &SecretString::from(""), None).await;
+
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].status, "drop-shape");
+        assert_eq!(log[0].value_shape, "empty");
+    }
+
+    /// Proves the 2026-05-09 incident class: a Vercel v2 envelope must never
+    /// be pushed back to Vercel as a value.
+    #[tokio::test]
+    async fn sync_hook_refuses_envelope_rotation_output() {
+        let (_dir, store) = setup_temp_store();
+        store
+            .upsert("credentials/vercel/api-token", b"token-x")
+            .unwrap();
+
+        let sync = SyncConfig {
+            vercel: Some(VercelSyncRef {
+                api_token_path: "credentials/vercel/api-token".into(),
+                project_id: "prj".into(),
+                team_id: None,
+                env_vars: vec![VercelEnvVarRef {
+                    name: "POSTGRES_URL".into(),
+                    targets: vec!["production".into()],
+                }],
+            }),
+        };
+
+        let envelope = SecretString::from("eyJ2IjoidjIiLCJlcGsiOnsieCI6InRlc3QifX0=");
+        let log = apply_sync_after_rotation_inner(&store, &sync, &envelope, None).await;
+
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].status, "drop-shape");
+        assert_eq!(log[0].value_shape, "vercel-envelope");
     }
 }

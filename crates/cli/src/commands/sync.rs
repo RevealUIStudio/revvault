@@ -9,6 +9,7 @@ use clap::Args;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
+use revvault_core::sync::shape::{self, Shape};
 use revvault_core::sync::vercel::{VercelClient, VercelEnvVar};
 use revvault_core::{Config, PassageStore};
 
@@ -26,10 +27,6 @@ pub struct SyncArgs {
     /// Apply changes (default is dry-run)
     #[arg(long)]
     pub apply: bool,
-
-    /// Pull: import existing Vercel vars into the vault
-    #[arg(long)]
-    pub pull: bool,
 
     /// Vercel API token (or set VERCEL_TOKEN env var)
     #[arg(long)]
@@ -59,33 +56,64 @@ struct ProjectSync {
     /// Skip these env var names (integration-managed, etc.)
     #[serde(default)]
     skip: Vec<String>,
-    /// Per-var path overrides. Maps a Vercel var name to an absolute vault
-    /// path. When a var is in this map, its vault path is the override
-    /// instead of `<vault_prefix>/<VAR_NAME>`.
+    /// Per-var path + optional shape overrides.
     ///
-    /// Use case: one canonical kebab-cased vault path (e.g.
-    /// `revealui/prod/db/postgres-url`) feeding multiple Vercel vars
-    /// (e.g. `POSTGRES_URL` + `DATABASE_URL`) across one or more projects,
-    /// without duplicating the value in the vault.
+    /// Supports two TOML forms for backwards compatibility:
     ///
-    /// TOML form:
+    /// Bare string (path only, shape defaults to `any`):
     /// ```toml
     /// [projects.api.vars]
     /// POSTGRES_URL = "revealui/prod/db/postgres-url"
-    /// DATABASE_URL = "revealui/prod/db/postgres-url"
+    /// ```
+    ///
+    /// Inline table (path + explicit shape):
+    /// ```toml
+    /// [projects.api.vars]
+    /// POSTGRES_URL = { path = "revealui/prod/db/postgres-url", shape = "postgres-url" }
     /// ```
     #[serde(default)]
-    vars: HashMap<String, String>,
+    vars: HashMap<String, VarEntry>,
+}
+
+/// A per-var entry in `[projects.<slug>.vars]`.
+///
+/// `#[serde(untagged)]` makes TOML bare strings parse as `Path(String)`
+/// while inline tables parse as `Object { path, shape }`. Existing manifests
+/// that use bare strings keep working unchanged.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum VarEntry {
+    /// Bare string — path only; shape defaults to `Shape::Any`.
+    Path(String),
+    /// Inline table — path + explicit shape constraint.
+    Object { path: String, shape: Shape },
+}
+
+impl VarEntry {
+    fn path(&self) -> &str {
+        match self {
+            Self::Path(p) => p,
+            Self::Object { path, .. } => path,
+        }
+    }
+
+    fn shape(&self) -> Shape {
+        match self {
+            Self::Path(_) => Shape::Any,
+            Self::Object { shape, .. } => *shape,
+        }
+    }
 }
 
 impl ProjectSync {
-    /// Resolve the vault path for a given Vercel var name. Returns the override
-    /// if one is set in `vars`, otherwise the prefix-derived default.
-    fn vault_path_for(&self, var_name: &str) -> String {
-        self.vars
-            .get(var_name)
-            .cloned()
-            .unwrap_or_else(|| format!("{}/{}", self.vault_prefix, var_name))
+    /// Resolve the vault path + declared shape for a given Vercel var name.
+    /// Returns the override if one is set in `vars`, otherwise the
+    /// prefix-derived default with `Shape::Any`.
+    fn vault_path_for(&self, var_name: &str) -> (String, Shape) {
+        match self.vars.get(var_name) {
+            Some(entry) => (entry.path().to_string(), entry.shape()),
+            None => (format!("{}/{}", self.vault_prefix, var_name), Shape::Any),
+        }
     }
 }
 
@@ -103,8 +131,10 @@ fn default_targets() -> Vec<String> {
 enum DiffAction {
     Add,
     Update,
+    Match,
     Orphan,
     Skip,
+    DropShape,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,10 +149,17 @@ struct DiffEntry {
 #[derive(Serialize)]
 struct AuditEntry {
     timestamp: String,
+    /// One of: "create", "update", "match", "drop-shape", "skip"
     action: String,
     project: String,
     key: String,
+    /// Shape category of the vault value (e.g. "postgres-url", "stripe-key",
+    /// "vercel-envelope", "empty"). Never the value itself.
+    value_shape: String,
+    /// "ok" | "failed"
     result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 fn append_audit_log(entry: &AuditEntry) -> anyhow::Result<()> {
@@ -162,148 +199,7 @@ pub async fn run(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
     let store = PassageStore::open(config)?;
     let client = VercelClient::new(token, manifest.team_id.clone());
 
-    if args.pull {
-        return pull_mode(&store, &client, &manifest, args.apply, json_output).await;
-    }
-
     push_mode(&store, &client, &manifest, args.apply, json_output).await
-}
-
-// ── Pull mode: import Vercel vars into vault ────────────────────────────────
-
-/// Pre-write check for vault-path collisions on pull. Multiple Vercel keys
-/// mapping to the same vault path is intentional aliasing (e.g.
-/// `POSTGRES_URL` + `DATABASE_URL` → `revealui/prod/db/postgres-url`), but if
-/// Vercel has drifted and those keys hold different values, naively writing
-/// each in API iteration order would silently overwrite the canonical secret
-/// with whichever entry the API returned last. Refuse the pull and surface
-/// the conflicting keys so the operator can resolve drift on Vercel before
-/// re-running.
-fn detect_path_collisions(
-    project_name: &str,
-    project_cfg: &ProjectSync,
-    remote_vars: &[VercelEnvVar],
-) -> anyhow::Result<()> {
-    let mut by_path: HashMap<String, Vec<(&str, &str)>> = HashMap::new();
-    for var in remote_vars {
-        if project_cfg.skip.contains(&var.key) {
-            continue;
-        }
-        if var.configuration_id.is_some() {
-            continue;
-        }
-        let vault_path = project_cfg.vault_path_for(&var.key);
-        let value = var.value.as_deref().unwrap_or("");
-        by_path
-            .entry(vault_path)
-            .or_default()
-            .push((var.key.as_str(), value));
-    }
-
-    for (path, members) in &by_path {
-        if members.len() < 2 {
-            continue;
-        }
-        let first_value = members[0].1;
-        if members.iter().any(|(_, v)| *v != first_value) {
-            let keys: Vec<&str> = members.iter().map(|(k, _)| *k).collect();
-            bail!(
-                "Vault path collision in project {project_name:?}: vault path {path:?} \
-                 is targeted by Vercel keys {keys:?} with differing values. Resolve the \
-                 drift on Vercel (or remove a per-var override in the manifest) before \
-                 re-running pull."
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn pull_mode(
-    store: &PassageStore,
-    client: &VercelClient,
-    manifest: &SyncManifest,
-    apply: bool,
-    json_output: bool,
-) -> anyhow::Result<()> {
-    for (project_name, project_cfg) in &manifest.projects {
-        let remote_vars = client.list_env_vars(&project_cfg.project_id).await?;
-
-        // Bail before any writes if multiple Vercel keys map to the same
-        // vault path with differing values. See detect_path_collisions docs.
-        detect_path_collisions(project_name, project_cfg, &remote_vars)?;
-
-        if !json_output {
-            println!("\n\x1b[1m{}\x1b[0m (pull)", project_name);
-        }
-
-        let mut imported = 0u32;
-        let mut skipped = 0u32;
-
-        for var in &remote_vars {
-            if project_cfg.skip.contains(&var.key) {
-                skipped += 1;
-                continue;
-            }
-            // Integration-managed vars have a configurationId — skip them
-            if var.configuration_id.is_some() {
-                skipped += 1;
-                continue;
-            }
-
-            let vault_path = project_cfg.vault_path_for(&var.key);
-            let value = var.value.as_deref().unwrap_or("");
-
-            if !json_output {
-                if apply {
-                    print!("  \x1b[32m+\x1b[0m {} ", var.key);
-                } else {
-                    print!("  \x1b[33m~\x1b[0m {} (dry-run) ", var.key);
-                }
-            }
-
-            if apply {
-                store.upsert(&vault_path, value.as_bytes())?;
-                imported += 1;
-                if !json_output {
-                    println!("→ {}", vault_path);
-                }
-                let _ = append_audit_log(&AuditEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    action: "pull".to_string(),
-                    project: project_name.clone(),
-                    key: var.key.clone(),
-                    result: "ok".to_string(),
-                });
-            } else {
-                imported += 1;
-                if !json_output {
-                    println!("→ {}", vault_path);
-                }
-            }
-        }
-
-        if json_output {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "project": project_name,
-                    "mode": "pull",
-                    "dry_run": !apply,
-                    "imported": imported,
-                    "skipped": skipped,
-                })
-            );
-        } else {
-            println!(
-                "  {} imported, {} skipped{}",
-                imported,
-                skipped,
-                if !apply { " (dry-run)" } else { "" }
-            );
-        }
-    }
-
-    Ok(())
 }
 
 // ── Push mode: sync vault to Vercel ─────────────────────────────────────────
@@ -317,14 +213,30 @@ async fn push_mode(
 ) -> anyhow::Result<()> {
     for (project_name, project_cfg) in &manifest.projects {
         let remote_vars = client.list_env_vars(&project_cfg.project_id).await?;
-        // Filter remote vars to those targeting at least one of our configured
-        // environments. Without this, when Vercel returns multiple entries with
-        // the same key (one per environment-target combination — Vercel splits
-        // them when the operator created them via separate add operations),
-        // the HashMap below collapses to whichever happens last in iteration,
-        // potentially picking a non-production entry. Updating that entry then
-        // tries to set its target to ours, conflicting with the existing
-        // production entry → 400 Bad Request.
+
+        // Attempt to fetch decrypted values for MATCH detection. Falls back
+        // to None when the token lacks `env:read:decrypted` scope (403),
+        // which causes all existing vars to be treated as needing an update.
+        //
+        // Filter by the configured targets before collapsing by key — same
+        // as `remote_map` below. Without this, a row for a non-synced target
+        // (e.g. preview) could win the per-key collapse and a stale value on
+        // our actual target (e.g. production) would be falsely classified as
+        // a MATCH and skipped, leaving the synced target outdated.
+        let remote_decrypted_map: Option<HashMap<String, String>> = match client
+            .list_env_vars_with_values(&project_cfg.project_id)
+            .await
+        {
+            Ok(Some(vars)) => Some(
+                vars.into_iter()
+                    .filter(|v| project_cfg.targets.iter().any(|t| v.target.contains(t)))
+                    .filter_map(|v| v.value.map(|val| (v.key, val)))
+                    .collect(),
+            ),
+            Ok(None) => None,
+            Err(_) => None,
+        };
+
         let remote_map: HashMap<String, &VercelEnvVar> = remote_vars
             .iter()
             .filter(|v| project_cfg.targets.iter().any(|t| v.target.contains(t)))
@@ -332,8 +244,7 @@ async fn push_mode(
             .collect();
 
         // Build the union of vars to sync: explicit overrides + everything
-        // under the project's vault_prefix. Overrides win — a var name in
-        // `vars` is never read from `<prefix>/<VAR_NAME>` even if both exist.
+        // under the project's vault_prefix.
         let mut vault_var_names: Vec<String> = Vec::new();
         for var_name in project_cfg.vars.keys() {
             vault_var_names.push(var_name.clone());
@@ -363,12 +274,56 @@ async fn push_mode(
                 continue;
             }
 
-            if remote_map.contains_key(var_name) {
+            let (vault_path, declared_shape) = project_cfg.vault_path_for(var_name);
+
+            // Read and validate the vault value before deciding the diff action.
+            let secret_result = store.get(&vault_path);
+            let vault_value = match secret_result {
+                Ok(s) => s,
+                Err(e) => {
+                    if !json_output {
+                        eprintln!(
+                            "  \x1b[31m✗\x1b[0m {} — cannot read vault path {}: {}",
+                            var_name, vault_path, e
+                        );
+                    }
+                    continue;
+                }
+            };
+
+            let raw_value = vault_value.expose_secret();
+            let violation = shape::check(raw_value, declared_shape).err();
+
+            if let Some(ref v) = violation {
                 diff.push(DiffEntry {
                     key: var_name.clone(),
-                    action: DiffAction::Update,
-                    reason: None,
+                    action: DiffAction::DropShape,
+                    reason: Some(format!("shape violation: {v}")),
                 });
+                continue;
+            }
+
+            if remote_map.contains_key(var_name) {
+                // Check for MATCH: if decrypted remote value equals vault value, skip the write.
+                let is_match = remote_decrypted_map
+                    .as_ref()
+                    .and_then(|m| m.get(var_name))
+                    .map(|remote_val| remote_val == raw_value)
+                    .unwrap_or(false);
+
+                if is_match {
+                    diff.push(DiffEntry {
+                        key: var_name.clone(),
+                        action: DiffAction::Match,
+                        reason: None,
+                    });
+                } else {
+                    diff.push(DiffEntry {
+                        key: var_name.clone(),
+                        action: DiffAction::Update,
+                        reason: None,
+                    });
+                }
             } else {
                 diff.push(DiffEntry {
                     key: var_name.clone(),
@@ -378,17 +333,14 @@ async fn push_mode(
             }
         }
 
-        // Detect orphans (in Vercel but not in vault). Use the target-filtered
-        // map's keys so we only surface orphans for the environments we sync —
-        // a var that exists only on preview/development isn't an orphan from
-        // production's perspective.
+        // Detect orphans (in Vercel but not in vault).
         let mut seen_orphans: std::collections::HashSet<String> = std::collections::HashSet::new();
         for remote_var in remote_map.values() {
             if project_cfg.skip.contains(&remote_var.key) {
                 continue;
             }
             if remote_var.configuration_id.is_some() {
-                continue; // Integration-managed
+                continue;
             }
             if !vault_var_names.contains(&remote_var.key) && !seen_orphans.contains(&remote_var.key)
             {
@@ -422,8 +374,10 @@ async fn push_mode(
                 let (symbol, color) = match entry.action {
                     DiffAction::Add => ("+", "\x1b[32m"),
                     DiffAction::Update => ("~", "\x1b[33m"),
+                    DiffAction::Match => ("=", "\x1b[90m"),
                     DiffAction::Orphan => ("!", "\x1b[31m"),
                     DiffAction::Skip => ("-", "\x1b[90m"),
+                    DiffAction::DropShape => ("✗", "\x1b[31m"),
                 };
                 let reason = entry
                     .reason
@@ -437,15 +391,31 @@ async fn push_mode(
         // Apply changes
         if apply {
             for entry in &diff {
-                let vault_path = project_cfg.vault_path_for(&entry.key);
+                let (vault_path, declared_shape) = project_cfg.vault_path_for(&entry.key);
                 match entry.action {
                     DiffAction::Add => {
                         let secret = store.get(&vault_path)?;
+                        let raw = secret.expose_secret();
+
+                        // Shape guard (should already be DROP'd in diff, but be defensive)
+                        if let Err(v) = shape::check(raw, declared_shape) {
+                            let _ = append_audit_log(&AuditEntry {
+                                timestamp: Utc::now().to_rfc3339(),
+                                action: "drop-shape".to_string(),
+                                project: project_name.clone(),
+                                key: entry.key.clone(),
+                                value_shape: shape::classify(raw),
+                                result: "failed".to_string(),
+                                error: Some(v.to_string()),
+                            });
+                            continue;
+                        }
+
                         client
                             .create_env_var(
                                 &project_cfg.project_id,
                                 &entry.key,
-                                secret.expose_secret(),
+                                raw,
                                 &project_cfg.targets,
                             )
                             .await?;
@@ -454,18 +424,35 @@ async fn push_mode(
                             action: "create".to_string(),
                             project: project_name.clone(),
                             key: entry.key.clone(),
+                            value_shape: shape::classify(raw),
                             result: "ok".to_string(),
+                            error: None,
                         });
                     }
                     DiffAction::Update => {
                         let secret = store.get(&vault_path)?;
+                        let raw = secret.expose_secret();
+
+                        if let Err(v) = shape::check(raw, declared_shape) {
+                            let _ = append_audit_log(&AuditEntry {
+                                timestamp: Utc::now().to_rfc3339(),
+                                action: "drop-shape".to_string(),
+                                project: project_name.clone(),
+                                key: entry.key.clone(),
+                                value_shape: shape::classify(raw),
+                                result: "failed".to_string(),
+                                error: Some(v.to_string()),
+                            });
+                            continue;
+                        }
+
                         if let Some(remote) = remote_map.get(&entry.key) {
                             if let Some(ref id) = remote.id {
                                 client
                                     .update_env_var(
                                         &project_cfg.project_id,
                                         id,
-                                        secret.expose_secret(),
+                                        raw,
                                         &project_cfg.targets,
                                     )
                                     .await?;
@@ -474,14 +461,53 @@ async fn push_mode(
                                     action: "update".to_string(),
                                     project: project_name.clone(),
                                     key: entry.key.clone(),
+                                    value_shape: shape::classify(raw),
                                     result: "ok".to_string(),
+                                    error: None,
                                 });
                             }
                         }
                     }
+                    DiffAction::Match => {
+                        let secret = store.get(&vault_path)?;
+                        let raw = secret.expose_secret();
+                        let _ = append_audit_log(&AuditEntry {
+                            timestamp: Utc::now().to_rfc3339(),
+                            action: "match".to_string(),
+                            project: project_name.clone(),
+                            key: entry.key.clone(),
+                            value_shape: shape::classify(raw),
+                            result: "ok".to_string(),
+                            error: None,
+                        });
+                    }
+                    DiffAction::DropShape => {
+                        if !json_output {
+                            eprintln!(
+                                "  \x1b[31m✗\x1b[0m DROP {}: {}",
+                                entry.key,
+                                entry.reason.as_deref().unwrap_or("")
+                            );
+                        }
+                        if let Ok(secret) = store.get(&vault_path) {
+                            let raw = secret.expose_secret();
+                            let _ = append_audit_log(&AuditEntry {
+                                timestamp: Utc::now().to_rfc3339(),
+                                action: "drop-shape".to_string(),
+                                project: project_name.clone(),
+                                key: entry.key.clone(),
+                                value_shape: shape::classify(raw),
+                                result: "failed".to_string(),
+                                error: entry.reason.clone(),
+                            });
+                        }
+                    }
                     DiffAction::Orphan => {
                         if !json_output {
-                            println!("  \x1b[31m⚠\x1b[0m  Orphan: {} (not deleted — remove manually or add to vault)", entry.key);
+                            println!(
+                                "  \x1b[31m⚠\x1b[0m  Orphan: {} (not deleted — remove manually or add to vault)",
+                                entry.key
+                            );
                         }
                     }
                     DiffAction::Skip => {}
@@ -505,7 +531,7 @@ async fn push_mode(
 mod tests {
     use super::*;
 
-    fn project_with_vars(vars: HashMap<String, String>) -> ProjectSync {
+    fn project_with_vars(vars: HashMap<String, VarEntry>) -> ProjectSync {
         ProjectSync {
             project_id: "prj_test".to_string(),
             vault_prefix: "revealui/vercel/api".to_string(),
@@ -515,13 +541,20 @@ mod tests {
         }
     }
 
+    fn project_with_string_vars(vars: HashMap<String, String>) -> ProjectSync {
+        let entries = vars
+            .into_iter()
+            .map(|(k, v)| (k, VarEntry::Path(v)))
+            .collect();
+        project_with_vars(entries)
+    }
+
     #[test]
     fn vault_path_for_returns_prefix_default_when_no_override() {
         let cfg = project_with_vars(HashMap::new());
-        assert_eq!(
-            cfg.vault_path_for("STRIPE_SECRET_KEY"),
-            "revealui/vercel/api/STRIPE_SECRET_KEY"
-        );
+        let (path, shape) = cfg.vault_path_for("STRIPE_SECRET_KEY");
+        assert_eq!(path, "revealui/vercel/api/STRIPE_SECRET_KEY");
+        assert_eq!(shape, Shape::Any);
     }
 
     #[test]
@@ -529,18 +562,30 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert(
             "POSTGRES_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
+            VarEntry::Path("revealui/prod/db/postgres-url".to_string()),
         );
         let cfg = project_with_vars(vars);
-        assert_eq!(
-            cfg.vault_path_for("POSTGRES_URL"),
-            "revealui/prod/db/postgres-url"
+        let (path, shape) = cfg.vault_path_for("POSTGRES_URL");
+        assert_eq!(path, "revealui/prod/db/postgres-url");
+        assert_eq!(shape, Shape::Any);
+        let (path2, _) = cfg.vault_path_for("STRIPE_SECRET_KEY");
+        assert_eq!(path2, "revealui/vercel/api/STRIPE_SECRET_KEY");
+    }
+
+    #[test]
+    fn vault_path_for_object_entry_returns_declared_shape() {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "POSTGRES_URL".to_string(),
+            VarEntry::Object {
+                path: "revealui/prod/db/postgres-url".to_string(),
+                shape: Shape::PostgresUrl,
+            },
         );
-        // Non-overridden var still uses the prefix-derived default.
-        assert_eq!(
-            cfg.vault_path_for("STRIPE_SECRET_KEY"),
-            "revealui/vercel/api/STRIPE_SECRET_KEY"
-        );
+        let cfg = project_with_vars(vars);
+        let (path, shape) = cfg.vault_path_for("POSTGRES_URL");
+        assert_eq!(path, "revealui/prod/db/postgres-url");
+        assert_eq!(shape, Shape::PostgresUrl);
     }
 
     #[test]
@@ -548,17 +593,16 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert(
             "POSTGRES_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
+            VarEntry::Path("revealui/prod/db/postgres-url".to_string()),
         );
         vars.insert(
             "DATABASE_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
+            VarEntry::Path("revealui/prod/db/postgres-url".to_string()),
         );
         let cfg = project_with_vars(vars);
-        assert_eq!(
-            cfg.vault_path_for("POSTGRES_URL"),
-            cfg.vault_path_for("DATABASE_URL")
-        );
+        let (path1, _) = cfg.vault_path_for("POSTGRES_URL");
+        let (path2, _) = cfg.vault_path_for("DATABASE_URL");
+        assert_eq!(path1, path2);
     }
 
     #[test]
@@ -571,11 +615,13 @@ mod tests {
         let manifest: SyncManifest = toml::from_str(toml_src).unwrap();
         let api = manifest.projects.get("api").unwrap();
         assert!(api.vars.is_empty());
-        assert_eq!(api.vault_path_for("FOO"), "revealui/vercel/api/FOO");
+        let (path, shape) = api.vault_path_for("FOO");
+        assert_eq!(path, "revealui/vercel/api/FOO");
+        assert_eq!(shape, Shape::Any);
     }
 
     #[test]
-    fn manifest_parses_with_vars_table() {
+    fn manifest_parses_with_string_vars_table() {
         let toml_src = r#"
             [projects.api]
             project_id = "prj_test"
@@ -588,132 +634,57 @@ mod tests {
         let manifest: SyncManifest = toml::from_str(toml_src).unwrap();
         let api = manifest.projects.get("api").unwrap();
         assert_eq!(api.vars.len(), 2);
-        assert_eq!(
-            api.vault_path_for("POSTGRES_URL"),
-            "revealui/prod/db/postgres-url"
-        );
-        assert_eq!(api.vault_path_for("FOO"), "revealui/vercel/api/FOO");
-    }
-
-    fn env_var(key: &str, value: &str) -> VercelEnvVar {
-        VercelEnvVar {
-            id: Some(format!("env_{key}")),
-            key: key.to_string(),
-            value: Some(value.to_string()),
-            target: vec!["production".to_string()],
-            var_type: Some("encrypted".to_string()),
-            configuration_id: None,
-        }
+        let (path, shape) = api.vault_path_for("POSTGRES_URL");
+        assert_eq!(path, "revealui/prod/db/postgres-url");
+        assert_eq!(shape, Shape::Any);
+        let (foo_path, _) = api.vault_path_for("FOO");
+        assert_eq!(foo_path, "revealui/vercel/api/FOO");
     }
 
     #[test]
-    fn detect_path_collisions_passes_when_each_key_maps_to_unique_path() {
-        let cfg = project_with_vars(HashMap::new());
-        let vars = vec![
-            env_var("STRIPE_SECRET_KEY", "sk_live_a"),
-            env_var("STRIPE_WEBHOOK_SECRET", "whsec_b"),
-        ];
-        assert!(detect_path_collisions("api", &cfg, &vars).is_ok());
+    fn manifest_parses_with_object_vars_table() {
+        let toml_src = r#"
+            [projects.api]
+            project_id = "prj_test"
+            vault_prefix = "revealui/vercel/api"
+
+            [projects.api.vars]
+            POSTGRES_URL = { path = "revealui/prod/db/postgres-url", shape = "postgres-url" }
+            STRIPE_SECRET_KEY = { path = "revealui/prod/stripe/secret-key", shape = "stripe-key-live-only" }
+        "#;
+        let manifest: SyncManifest = toml::from_str(toml_src).unwrap();
+        let api = manifest.projects.get("api").unwrap();
+        let (path, shape) = api.vault_path_for("POSTGRES_URL");
+        assert_eq!(path, "revealui/prod/db/postgres-url");
+        assert_eq!(shape, Shape::PostgresUrl);
+        let (_, stripe_shape) = api.vault_path_for("STRIPE_SECRET_KEY");
+        assert_eq!(stripe_shape, Shape::StripeKeyLiveOnly);
     }
 
     #[test]
-    fn detect_path_collisions_passes_when_aliased_keys_have_matching_values() {
-        // POSTGRES_URL and DATABASE_URL both map to the same vault path AND
-        // hold the same Vercel value — intentional aliasing, no drift.
-        let mut overrides = HashMap::new();
-        overrides.insert(
-            "POSTGRES_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
-        );
-        overrides.insert(
-            "DATABASE_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
-        );
-        let cfg = project_with_vars(overrides);
-        let same = "postgres://prod.neon/db";
-        let vars = vec![env_var("POSTGRES_URL", same), env_var("DATABASE_URL", same)];
-        assert!(detect_path_collisions("api", &cfg, &vars).is_ok());
+    fn manifest_parses_mixed_string_and_object_vars() {
+        let toml_src = r#"
+            [projects.api]
+            project_id = "prj_test"
+            vault_prefix = "revealui/vercel/api"
+
+            [projects.api.vars]
+            POSTGRES_URL = "revealui/prod/db/postgres-url"
+            STRIPE_KEY = { path = "revealui/prod/stripe/key", shape = "stripe-key-live-only" }
+        "#;
+        let manifest: SyncManifest = toml::from_str(toml_src).unwrap();
+        let api = manifest.projects.get("api").unwrap();
+        let (_, pg_shape) = api.vault_path_for("POSTGRES_URL");
+        assert_eq!(pg_shape, Shape::Any);
+        let (_, stripe_shape) = api.vault_path_for("STRIPE_KEY");
+        assert_eq!(stripe_shape, Shape::StripeKeyLiveOnly);
     }
 
-    #[test]
-    fn detect_path_collisions_errors_when_aliased_keys_have_drifted_values() {
-        // Same alias setup, but Vercel has drifted — POSTGRES_URL and
-        // DATABASE_URL hold different values. Pull must refuse rather than
-        // silently overwrite the canonical secret in API iteration order.
-        let mut overrides = HashMap::new();
-        overrides.insert(
-            "POSTGRES_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
-        );
-        overrides.insert(
-            "DATABASE_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
-        );
-        let cfg = project_with_vars(overrides);
-        let vars = vec![
-            env_var("POSTGRES_URL", "postgres://prod.neon/db-A"),
-            env_var("DATABASE_URL", "postgres://prod.neon/db-B"),
-        ];
-        let err = detect_path_collisions("api", &cfg, &vars).unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("revealui/prod/db/postgres-url"), "got: {msg}");
-        assert!(msg.contains("POSTGRES_URL"), "got: {msg}");
-        assert!(msg.contains("DATABASE_URL"), "got: {msg}");
-        assert!(msg.contains("differing values"), "got: {msg}");
-    }
-
-    #[test]
-    fn detect_path_collisions_ignores_skipped_keys() {
-        // If one of the colliding keys is in `skip`, it doesn't participate
-        // in the drift check (and won't be written either).
-        let mut overrides = HashMap::new();
-        overrides.insert(
-            "POSTGRES_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
-        );
-        overrides.insert(
-            "DATABASE_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
-        );
-        let cfg = ProjectSync {
-            project_id: "prj_test".to_string(),
-            vault_prefix: "revealui/vercel/api".to_string(),
-            targets: default_targets(),
-            skip: vec!["DATABASE_URL".to_string()],
-            vars: overrides,
-        };
-        let vars = vec![
-            env_var("POSTGRES_URL", "value-A"),
-            env_var("DATABASE_URL", "value-B"),
-        ];
-        assert!(detect_path_collisions("api", &cfg, &vars).is_ok());
-    }
-
-    #[test]
-    fn detect_path_collisions_ignores_integration_managed_keys() {
-        // Integration-managed env vars (configurationId set) are skipped
-        // during pull; they shouldn't trigger drift errors either.
-        let mut overrides = HashMap::new();
-        overrides.insert(
-            "POSTGRES_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
-        );
-        overrides.insert(
-            "DATABASE_URL".to_string(),
-            "revealui/prod/db/postgres-url".to_string(),
-        );
-        let cfg = project_with_vars(overrides);
-        let vars = vec![
-            env_var("POSTGRES_URL", "value-A"),
-            VercelEnvVar {
-                id: Some("env_DATABASE_URL".to_string()),
-                key: "DATABASE_URL".to_string(),
-                value: Some("value-B".to_string()),
-                target: vec!["production".to_string()],
-                var_type: Some("encrypted".to_string()),
-                configuration_id: Some("integration_neon".to_string()),
-            },
-        ];
-        assert!(detect_path_collisions("api", &cfg, &vars).is_ok());
+    /// Helper: build a ProjectSync with old-style string vars for tests that
+    /// predate D6 (vault_path_for now returns (path, shape) — these tests
+    /// only care about the path half).
+    #[allow(dead_code)]
+    fn project_string_only(vars: HashMap<String, String>) -> ProjectSync {
+        project_with_string_vars(vars)
     }
 }

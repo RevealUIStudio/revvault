@@ -1,0 +1,22 @@
+# Gitleaks configuration for revvault.
+#
+# Extends the upstream default ruleset and adds one narrow allowlist.
+title = "revvault gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+crates/core/src/sync/shape.rs is the outbound-sync value-shape classifier.
+By design it contains secret-SHAPED test fixtures — fake PEM blocks, fake
+Stripe-key prefixes, fake hex strings — that exercise the shape predicates
+(empty / null / ciphertext-envelope / postgres-url / stripe-key / pem / hex /
+…). It holds no real secrets: the non-test code is pure prefix / length /
+char-class predicates with no literal values, and the #[cfg(test)] fixtures
+are deliberately well-known dummy strings. Allowlisting this one file keeps
+the gitleaks gate honest everywhere else.
+"""
+paths = [
+  '''crates/core/src/sync/shape\.rs''',
+]
