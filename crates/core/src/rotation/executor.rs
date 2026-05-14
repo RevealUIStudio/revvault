@@ -26,6 +26,7 @@ use crate::rotation::provider::RotationLogEntry;
 use crate::rotation::providers::build_provider;
 use crate::rotation::sync_hook::{self, SyncLogEntry};
 use crate::store::PassageStore;
+use crate::sync::shape::{self, Shape};
 
 /// Vault path where a provider's key ID is stored between rotations.
 /// e.g. `credentials/vercel/token` → `credentials/vercel/token-id`
@@ -84,7 +85,26 @@ pub async fn execute(
     // 4. Rotate
     let outcome = provider.rotate().await?;
 
-    // 5. Write new key
+    // 5. Validate output shape before writing to vault.
+    //    Universal structural checks (empty / null / envelope) always run.
+    //    Per-shape check runs when `output_shape` is declared.
+    //    On mismatch the rotation ABORTS — old key remains in vault.
+    {
+        let declared = provider_config.output_shape.unwrap_or(Shape::Any);
+        let raw = outcome.new_value.expose_secret();
+        if let Err(violation) = shape::check(raw, declared) {
+            return Err(anyhow::anyhow!(
+                "rotation provider '{}' returned a value that failed shape validation \
+                 ({}); rotation aborted — old key is unchanged. \
+                 Shape category: {}",
+                provider_name,
+                violation,
+                shape::classify(raw),
+            ));
+        }
+    }
+
+    // 5b. Write new key
     store
         .upsert(
             &provider_config.secret_path,

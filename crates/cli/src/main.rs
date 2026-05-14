@@ -44,6 +44,8 @@ enum Commands {
     RotationStatus,
     /// Sync vault secrets with external services (e.g., Vercel env vars)
     Sync(commands::sync::SyncArgs),
+    /// Vault-only health check: read every manifest entry, validate shape
+    Doctor(commands::doctor::DoctorArgs),
 }
 
 #[tokio::main]
@@ -70,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Rotate(args) => commands::rotate::run(args).await,
         Commands::RotationStatus => commands::rotate::status(),
         Commands::Sync(args) => commands::sync::run(args, json).await,
+        Commands::Doctor(args) => commands::doctor::run(args),
     };
 
     if let Err(ref e) = result {

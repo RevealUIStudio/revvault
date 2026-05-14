@@ -398,6 +398,7 @@ async fn executor_writes_new_key_to_vault_and_logs() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        output_shape: None,
     };
 
     executor::execute(&store, "svc", &provider_config)
@@ -462,6 +463,7 @@ async fn executor_uses_stored_key_id_for_revocation() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        output_shape: None,
     };
 
     executor::execute(&store, "svc", &provider_config)
@@ -487,6 +489,7 @@ async fn executor_local_hex32_writes_64_hex_chars_to_vault() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        output_shape: None,
     };
 
     executor::execute(&store, "internal", &provider_config)
@@ -512,6 +515,7 @@ async fn executor_local_hex64_writes_128_hex_chars_to_vault() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        output_shape: None,
     };
 
     executor::execute(&store, "internal", &provider_config)
@@ -534,6 +538,7 @@ async fn executor_local_uuid_writes_uuid_v4_to_vault() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        output_shape: None,
     };
 
     executor::execute(&store, "internal", &provider_config)
@@ -560,6 +565,7 @@ async fn local_factory_rejects_missing_generator_type() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        output_shape: None,
     };
 
     let err = executor::execute(&store, "internal", &provider_config)
@@ -581,6 +587,7 @@ async fn local_factory_rejects_unknown_generator_type() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        output_shape: None,
     };
 
     let err = executor::execute(&store, "internal", &provider_config)
@@ -617,6 +624,7 @@ async fn executor_runs_post_rotate_hooks_in_order() {
             format!("touch '{marker_b_sh}'"),
         ],
         verify: None,
+        output_shape: None,
     };
 
     executor::execute(&store, "seq", &provider_config)
@@ -637,6 +645,7 @@ async fn executor_post_rotate_failure_does_not_abort_rotation() {
         sync: None,
         post_rotate: vec!["false".into()], // exits 1
         verify: None,
+        output_shape: None,
     };
 
     // post_rotate hook is warn-only, so this must succeed.
@@ -667,6 +676,7 @@ async fn executor_verify_success_logs_verified_true() {
         sync: None,
         post_rotate: vec![],
         verify: Some("true".into()), // exits 0
+        output_shape: None,
     };
 
     executor::execute(&store, "verify-ok", &provider_config)
@@ -688,6 +698,7 @@ async fn executor_no_verify_omits_verified_field_in_log() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        output_shape: None,
     };
 
     executor::execute(&store, "no-verify", &provider_config)
@@ -714,6 +725,7 @@ async fn executor_verify_failure_returns_err_and_logs_verified_false() {
         sync: None,
         post_rotate: vec![],
         verify: Some("false".into()), // exits 1
+        output_shape: None,
     };
 
     let err = executor::execute(&store, "verify-fail", &provider_config)
@@ -756,6 +768,7 @@ async fn executor_verify_failure_with_post_rotate_still_runs_post_rotate() {
         sync: None,
         post_rotate: vec![format!("touch '{marker_sh}'")],
         verify: Some("false".into()), // exits 1 — strict failure
+        output_shape: None,
     };
 
     let _err = executor::execute(&store, "seq-and-fail", &provider_config)

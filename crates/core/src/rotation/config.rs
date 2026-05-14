@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, RevvaultError};
 use crate::rotation::sync_hook::SyncConfig;
+use crate::sync::shape::Shape;
 
 /// Rotation configuration loaded from `<store>/.revvault/rotation.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +44,23 @@ pub struct ProviderConfig {
     /// landed.
     #[serde(default)]
     pub verify: Option<String>,
+    /// Optional expected output shape of the rotated value. When set,
+    /// the executor validates the fresh rotation outcome against this
+    /// shape **before** writing it to the vault. A mismatch aborts the
+    /// rotation — the old key remains in place.
+    ///
+    /// The universal structural checks (empty / null-literal /
+    /// Vercel-envelope) always apply regardless of whether
+    /// `output_shape` is declared.
+    ///
+    /// TOML form:
+    /// ```toml
+    /// [providers.my-stripe-key]
+    /// secret_path = "revealui/prod/stripe/secret-key"
+    /// output_shape = "stripe-key-live-only"
+    /// ```
+    #[serde(default)]
+    pub output_shape: Option<Shape>,
 }
 
 impl RotationConfig {

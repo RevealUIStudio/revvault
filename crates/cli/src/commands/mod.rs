@@ -1,5 +1,6 @@
 pub mod completions;
 pub mod delete;
+pub mod doctor;
 pub mod edit;
 pub mod export_env;
 pub mod generate;
