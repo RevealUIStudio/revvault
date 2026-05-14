@@ -66,9 +66,9 @@ The frontend never touches `core` directly — it goes through `tauri-app` IPC. 
 | `revvault export-env [<prefix>]` | Materialize `.env`-shaped output for direnv | `revvault export-env revealui/dev/ > .envrc.secret` |
 | `revvault generate` | Generate a strong password (CSPRNG) | `revvault generate \| revvault set credentials/new` |
 | `revvault sync vercel [--manifest <path>]` | Show diff between vault + Vercel env vars (default = dry-run; manifest defaults to `revvault-vercel.toml`) | `revvault sync vercel --manifest revvault-vercel.toml` |
-| `revvault sync vercel --apply [--manifest <path>]` | Actually write the diff to Vercel | `revvault sync vercel --apply` |
-| `revvault sync vercel --pull [--manifest <path>]` | Import existing Vercel vars into the vault | `revvault sync vercel --pull` |
+| `revvault sync vercel --apply [--manifest <path>]` | Push vault values to Vercel; shape-validates each value before the API call | `revvault sync vercel --apply` |
 | `revvault sync vercel --token <token> ...` | Override Vercel API token (or set `VERCEL_TOKEN` env var) | `revvault sync vercel --apply --token $VERCEL_TOKEN` |
+| `revvault doctor [--manifest <path>] [--json]` | **0.2.0+** Vault-only health check — validates every manifest entry against its declared shape; exit 0 = all pass, exit 1 = failures found. Never touches Vercel. | `revvault doctor --manifest revvault-vercel.toml` |
 
 ### Path conventions
 
