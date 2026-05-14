@@ -217,12 +217,19 @@ async fn push_mode(
         // Attempt to fetch decrypted values for MATCH detection. Falls back
         // to None when the token lacks `env:read:decrypted` scope (403),
         // which causes all existing vars to be treated as needing an update.
+        //
+        // Filter by the configured targets before collapsing by key — same
+        // as `remote_map` below. Without this, a row for a non-synced target
+        // (e.g. preview) could win the per-key collapse and a stale value on
+        // our actual target (e.g. production) would be falsely classified as
+        // a MATCH and skipped, leaving the synced target outdated.
         let remote_decrypted_map: Option<HashMap<String, String>> = match client
             .list_env_vars_with_values(&project_cfg.project_id)
             .await
         {
             Ok(Some(vars)) => Some(
                 vars.into_iter()
+                    .filter(|v| project_cfg.targets.iter().any(|t| v.target.contains(t)))
                     .filter_map(|v| v.value.map(|val| (v.key, val)))
                     .collect(),
             ),
