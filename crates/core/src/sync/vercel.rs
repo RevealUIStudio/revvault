@@ -149,6 +149,35 @@ impl VercelClient {
         Ok(data.envs)
     }
 
+    /// List env vars with decrypted values via `decrypt=true`.
+    ///
+    /// Requires the `env:read:decrypted` scope on the Vercel token. Returns
+    /// `Ok(None)` when the token lacks the scope (403) so callers can fall
+    /// back to assume-drift rather than hard-failing. Any other non-success
+    /// status is returned as `Err`.
+    pub async fn list_env_vars_with_values(
+        &self,
+        project_id: &str,
+    ) -> anyhow::Result<Option<Vec<VercelEnvVar>>> {
+        let base = self.base_url(project_id);
+        let separator = if base.contains('?') { '&' } else { '?' };
+        let url = format!("{base}{separator}decrypt=true");
+        let req = self.client.get(&url).bearer_auth(&self.token);
+        let resp = self.send_retrying(req).await?;
+
+        if resp.status() == reqwest::StatusCode::FORBIDDEN {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("Vercel API (decrypt=true) returned {}: {}", status, body);
+        }
+
+        let data: VercelEnvListResponse = resp.json().await?;
+        Ok(Some(data.envs))
+    }
+
     /// Create a new env var. The Vercel API rejects duplicates with
     /// 409; callers detect existing rows via [`Self::list_env_vars`]
     /// + dispatch to [`Self::update_env_var`] when present.
