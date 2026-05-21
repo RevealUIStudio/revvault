@@ -83,7 +83,7 @@ Paths are lower-kebab, grouped by repo or product, then by subsystem:
 | `revealui/prod/<subsystem>/<name>` | `revealui/prod/neon/postgres-url`, `revealui/prod/stripe/secret-key`, `revealui/prod/stripe/webhook-secret` |
 | `revealui/prod/storage/r2/<name>` | `revealui/prod/storage/r2/access-key-id` |
 | `revealcoin/<keypair>` | `revealcoin/mint-authority.json` |
-| `revforge/customers/<slug>/<name>` | `revforge/customers/allevia/admin-password` |
+| `revforge/customers/<slug>/<name>` | `revforge/customers/acme/admin-password` |
 | `revdev/<name>` | `revdev/license-signing-key` |
 | `credentials/<system>/<name>` | `credentials/github/personal-token`, `credentials/anthropic/api-key` |
 
@@ -117,7 +117,7 @@ Secrets live in a directory hierarchy as `.age` files:
 │   └── mint-authority.json.age
 ├── revforge/
 │   └── customers/
-│       └── allevia/admin-password.age
+│       └── acme/admin-password.age
 ├── credentials/
 │   └── github/personal-token.age
 └── ssh/
