@@ -7,8 +7,10 @@
 //! `rotation.toml`). Both flows share the [`vercel::VercelClient`]
 //! transport in this module.
 
+pub mod fly;
 pub mod shape;
 pub mod vercel;
 
+pub use fly::{FlyClient, FlySecret};
 pub use shape::{Shape, ShapeViolation};
 pub use vercel::{VercelClient, VercelEnvVar};
