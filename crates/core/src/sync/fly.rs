@@ -16,8 +16,8 @@
 //!
 //! # Retry
 //!
-//! [`FlyClient::send_retrying`] retries `429 Too Many Requests` with backoffs
-//! of 100ms / 500ms / 2000ms — identical policy to the Vercel client. Other
+//! The transport retries `429 Too Many Requests` with backoffs of 100ms /
+//! 500ms / 2000ms — identical policy to the Vercel client. Other
 //! non-2xx statuses surface immediately. GraphQL-level errors (HTTP 200 with a
 //! non-empty `errors` array) are also surfaced as `Err`.
 //!
