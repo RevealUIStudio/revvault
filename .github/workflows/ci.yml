@@ -143,13 +143,27 @@ jobs:
   gitleaks:
     name: Gitleaks (full history)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # gitleaks CLI binary (MIT, free). The gitleaks-action wrapper requires a
+      # paid license for organization accounts and fails on Dependabot PRs.
+      GITLEAKS_VERSION: "8.30.0"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Run gitleaks
+        run: |
+          gitleaks detect --no-banner --redact \
+            --config .gitleaks.toml \
+            --report-path /tmp/gitleaks-report.json --report-format json
 
   test-cross-platform:
     # Cross-platform regression coverage. The primary `test` job above
