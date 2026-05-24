@@ -256,12 +256,30 @@ async fn run_fly(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
         .with_context(|| format!("Cannot read manifest: {}", args.manifest.display()))?;
     let manifest: FlyManifest =
         toml::from_str(&manifest_content).context("Invalid Fly manifest TOML")?;
+    validate_fly_manifest(&manifest, &args.manifest)?;
 
     let config = Config::resolve()?;
     let store = PassageStore::open(config)?;
     let client = FlyClient::new(token);
 
     push_mode_fly(&store, &client, &manifest, args.apply, json_output).await
+}
+
+/// Reject a Fly manifest that declares no `[fly-apps.<name>]` entries.
+///
+/// `FlyManifest` ignores unknown fields and `fly_apps` defaults to empty, so
+/// pointing `sync fly` at a non-Fly manifest — e.g. the default Vercel manifest
+/// (`revvault-vercel.toml`) — would otherwise deserialize cleanly and sync
+/// nothing, silently skipping expected rotation under `--apply`. Surface that
+/// mis-targeting as a loud error instead.
+fn validate_fly_manifest(manifest: &FlyManifest, path: &std::path::Path) -> anyhow::Result<()> {
+    if manifest.fly_apps.is_empty() {
+        anyhow::bail!(
+            "No [fly-apps.<name>] entries found in {}. `sync fly` requires a Fly manifest; the default manifest is the Vercel manifest (revvault-vercel.toml). Pass --manifest <fly-manifest> or add a [fly-apps.<name>] section.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 // ── Push mode: sync vault to Vercel ─────────────────────────────────────────
@@ -957,5 +975,35 @@ mod tests {
         let manifest: FlyManifest = toml::from_str(toml_src).unwrap();
         let app = manifest.fly_apps.get("worker").unwrap();
         assert!(app.skip.contains(&"NODE_ENV".to_string()));
+    }
+
+    #[test]
+    fn empty_fly_manifest_is_rejected() {
+        // A Vercel-style manifest has no [fly-apps]; unknown fields are ignored,
+        // so it deserializes into an empty FlyManifest. The guard must reject it
+        // rather than let `sync fly` silently no-op.
+        let vercel_like = r#"
+            [projects.revealui-api]
+            project_id = "prj_x"
+            vault_prefix = "revealui/prod"
+        "#;
+        let manifest: FlyManifest = toml::from_str(vercel_like).unwrap();
+        assert!(manifest.fly_apps.is_empty());
+        let err = validate_fly_manifest(&manifest, std::path::Path::new("revvault-vercel.toml"))
+            .unwrap_err();
+        assert!(err.to_string().contains("No [fly-apps"));
+    }
+
+    #[test]
+    fn populated_fly_manifest_passes_validation() {
+        let toml_src = r#"
+            [fly-apps.worker]
+            app = "revealui-worker"
+
+            [fly-apps.worker.vars]
+            FOO = "revealui/prod/foo"
+        "#;
+        let manifest: FlyManifest = toml::from_str(toml_src).unwrap();
+        validate_fly_manifest(&manifest, std::path::Path::new("fly.toml")).unwrap();
     }
 }
