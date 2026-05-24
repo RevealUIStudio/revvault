@@ -9,6 +9,7 @@ use clap::Args;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
+use revvault_core::sync::fly::FlyClient;
 use revvault_core::sync::shape::{self, Shape};
 use revvault_core::sync::vercel::{VercelClient, VercelEnvVar};
 use revvault_core::{Config, PassageStore};
@@ -17,7 +18,7 @@ use revvault_core::{Config, PassageStore};
 
 #[derive(Args)]
 pub struct SyncArgs {
-    /// Target to sync with (currently only "vercel" is supported)
+    /// Target to sync with: "vercel" or "fly"
     pub target: String,
 
     /// Path to the sync manifest (default: revvault-vercel.toml)
@@ -28,7 +29,7 @@ pub struct SyncArgs {
     #[arg(long)]
     pub apply: bool,
 
-    /// Vercel API token (or set VERCEL_TOKEN env var)
+    /// API token for the target (or set VERCEL_TOKEN / FLY_API_TOKEN env var)
     #[arg(long)]
     pub token: Option<String>,
 }
@@ -125,6 +126,43 @@ fn default_targets() -> Vec<String> {
     ]
 }
 
+// ── Fly manifest schema ───────────────────────────────────────────────────────
+//
+// Fly secrets are app-scoped (no per-environment "targets") and the API never
+// returns secret *values* — only names + an opaque digest. So the Fly manifest
+// is app-centric and lists an explicit curated set of secrets (no prefix-scan:
+// we never want to push every secret under a prefix onto a worker app).
+
+#[derive(Debug, Deserialize)]
+struct FlyManifest {
+    /// Map of logical name → Fly app sync config (TOML `[fly-apps.<name>]`).
+    #[serde(default, rename = "fly-apps")]
+    fly_apps: HashMap<String, FlyAppSync>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlyAppSync {
+    /// Fly app name (used as the GraphQL `appId`).
+    app: String,
+    /// Secret names this sync intentionally never touches.
+    #[serde(default)]
+    skip: Vec<String>,
+    /// Secret name → vault path (+ optional shape), reusing [`VarEntry`].
+    /// Every managed secret must be listed — there is no prefix fallback.
+    #[serde(default)]
+    vars: HashMap<String, VarEntry>,
+}
+
+impl FlyAppSync {
+    /// Resolve the vault path + declared shape for a Fly secret name, or
+    /// `None` when the name is not declared in `vars`.
+    fn vault_path_for(&self, var_name: &str) -> Option<(String, Shape)> {
+        self.vars
+            .get(var_name)
+            .map(|entry| (entry.path().to_string(), entry.shape()))
+    }
+}
+
 // ── Diff engine ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -179,10 +217,14 @@ fn append_audit_log(entry: &AuditEntry) -> anyhow::Result<()> {
 // ── Main runner ─────────────────────────────────────────────────────────────
 
 pub async fn run(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
-    if args.target != "vercel" {
-        bail!("Unknown sync target '{}'. Supported: vercel", args.target);
+    match args.target.as_str() {
+        "vercel" => run_vercel(args, json_output).await,
+        "fly" => run_fly(args, json_output).await,
+        other => bail!("Unknown sync target '{}'. Supported: vercel, fly", other),
     }
+}
 
+async fn run_vercel(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
     let token = args
         .token
         .or_else(|| std::env::var("VERCEL_TOKEN").ok())
@@ -200,6 +242,44 @@ pub async fn run(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
     let client = VercelClient::new(token, manifest.team_id.clone());
 
     push_mode(&store, &client, &manifest, args.apply, json_output).await
+}
+
+async fn run_fly(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
+    let token = args
+        .token
+        .or_else(|| std::env::var("FLY_API_TOKEN").ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!("FLY_API_TOKEN not set. Pass --token or set FLY_API_TOKEN env var")
+        })?;
+
+    let manifest_content = fs::read_to_string(&args.manifest)
+        .with_context(|| format!("Cannot read manifest: {}", args.manifest.display()))?;
+    let manifest: FlyManifest =
+        toml::from_str(&manifest_content).context("Invalid Fly manifest TOML")?;
+    validate_fly_manifest(&manifest, &args.manifest)?;
+
+    let config = Config::resolve()?;
+    let store = PassageStore::open(config)?;
+    let client = FlyClient::new(token);
+
+    push_mode_fly(&store, &client, &manifest, args.apply, json_output).await
+}
+
+/// Reject a Fly manifest that declares no `[fly-apps.<name>]` entries.
+///
+/// `FlyManifest` ignores unknown fields and `fly_apps` defaults to empty, so
+/// pointing `sync fly` at a non-Fly manifest — e.g. the default Vercel manifest
+/// (`revvault-vercel.toml`) — would otherwise deserialize cleanly and sync
+/// nothing, silently skipping expected rotation under `--apply`. Surface that
+/// mis-targeting as a loud error instead.
+fn validate_fly_manifest(manifest: &FlyManifest, path: &std::path::Path) -> anyhow::Result<()> {
+    if manifest.fly_apps.is_empty() {
+        anyhow::bail!(
+            "No [fly-apps.<name>] entries found in {}. `sync fly` requires a Fly manifest; the default manifest is the Vercel manifest (revvault-vercel.toml). Pass --manifest <fly-manifest> or add a [fly-apps.<name>] section.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 // ── Push mode: sync vault to Vercel ─────────────────────────────────────────
@@ -527,6 +607,163 @@ async fn push_mode(
     Ok(())
 }
 
+// ── Push mode (Fly): batch vault → Fly setSecrets ────────────────────────────
+//
+// Fly hides secret values, so there is no value-equality MATCH: a present name
+// is an Update (re-set), an absent one an Add. All shape-valid secrets are
+// batched into ONE `setSecrets` call (= one Fly release). `replace_all=false`
+// means secrets not in the manifest are never deleted — orphans are surfaced
+// only, mirroring the Vercel client's no-delete policy.
+
+async fn push_mode_fly(
+    store: &PassageStore,
+    client: &FlyClient,
+    manifest: &FlyManifest,
+    apply: bool,
+    json_output: bool,
+) -> anyhow::Result<()> {
+    for (logical_name, app_cfg) in &manifest.fly_apps {
+        let remote = client.list_secret_names(&app_cfg.app).await?;
+        let remote_names: std::collections::HashSet<String> =
+            remote.into_iter().map(|s| s.name).collect();
+
+        let mut diff: Vec<DiffEntry> = Vec::new();
+        // (key, raw_value) pairs to push in one batched setSecrets on --apply.
+        let mut batch: Vec<(String, String)> = Vec::new();
+
+        for var_name in app_cfg.vars.keys() {
+            if app_cfg.skip.contains(var_name) {
+                diff.push(DiffEntry {
+                    key: var_name.clone(),
+                    action: DiffAction::Skip,
+                    reason: Some("in skip list".to_string()),
+                });
+                continue;
+            }
+
+            let (vault_path, declared_shape) = match app_cfg.vault_path_for(var_name) {
+                Some(v) => v,
+                None => continue, // unreachable: var_name came from vars.keys()
+            };
+
+            let vault_value = match store.get(&vault_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    if !json_output {
+                        eprintln!(
+                            "  \x1b[31m✗\x1b[0m {} — cannot read vault path {}: {}",
+                            var_name, vault_path, e
+                        );
+                    }
+                    continue;
+                }
+            };
+            let raw_value = vault_value.expose_secret();
+
+            if let Some(v) = shape::check(raw_value, declared_shape).err() {
+                diff.push(DiffEntry {
+                    key: var_name.clone(),
+                    action: DiffAction::DropShape,
+                    reason: Some(format!("shape violation: {v}")),
+                });
+                continue;
+            }
+
+            diff.push(DiffEntry {
+                key: var_name.clone(),
+                action: if remote_names.contains(var_name) {
+                    DiffAction::Update
+                } else {
+                    DiffAction::Add
+                },
+                reason: None,
+            });
+            batch.push((var_name.clone(), raw_value.to_string()));
+        }
+
+        // Orphans: set on Fly but not in the manifest (never auto-deleted).
+        for name in &remote_names {
+            if app_cfg.skip.contains(name) || app_cfg.vars.contains_key(name) {
+                continue;
+            }
+            diff.push(DiffEntry {
+                key: name.clone(),
+                action: DiffAction::Orphan,
+                reason: Some("set on Fly but not in manifest".to_string()),
+            });
+        }
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "app": app_cfg.app,
+                    "logical": logical_name,
+                    "mode": "push-fly",
+                    "dry_run": !apply,
+                    "diff": diff,
+                })
+            );
+        } else {
+            println!(
+                "\n\x1b[1m{}\x1b[0m → Fly app \x1b[1m{}\x1b[0m (push{})",
+                logical_name,
+                app_cfg.app,
+                if apply { "" } else { " — dry-run" }
+            );
+            for entry in &diff {
+                let (symbol, color) = match entry.action {
+                    DiffAction::Add => ("+", "\x1b[32m"),
+                    DiffAction::Update => ("~", "\x1b[33m"),
+                    DiffAction::Match => ("=", "\x1b[90m"),
+                    DiffAction::Orphan => ("!", "\x1b[31m"),
+                    DiffAction::Skip => ("-", "\x1b[90m"),
+                    DiffAction::DropShape => ("✗", "\x1b[31m"),
+                };
+                let reason = entry
+                    .reason
+                    .as_deref()
+                    .map(|r| format!(" ({})", r))
+                    .unwrap_or_default();
+                println!("  {}{}\x1b[0m {}{}", color, symbol, entry.key, reason);
+            }
+        }
+
+        // Apply: one batched setSecrets call = one Fly release.
+        if apply {
+            if batch.is_empty() {
+                if !json_output {
+                    println!("  no secrets to set");
+                }
+            } else {
+                let result = client
+                    .set_secrets(&app_cfg.app, &batch, false)
+                    .await
+                    .with_context(|| format!("setSecrets failed for Fly app '{}'", app_cfg.app))?;
+                for (key, raw) in &batch {
+                    let _ = append_audit_log(&AuditEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        action: "set-fly".to_string(),
+                        project: app_cfg.app.clone(),
+                        key: key.clone(),
+                        value_shape: shape::classify(raw),
+                        result: "ok".to_string(),
+                        error: None,
+                    });
+                }
+                if !json_output {
+                    match result.release_version {
+                        Some(v) => println!("  {} secrets set — Fly release v{}", batch.len(), v),
+                        None => println!("  {} secrets set", batch.len()),
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,5 +923,87 @@ mod tests {
     #[allow(dead_code)]
     fn project_string_only(vars: HashMap<String, String>) -> ProjectSync {
         project_with_string_vars(vars)
+    }
+
+    // ── Fly manifest ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn fly_manifest_parses_apps_and_vars() {
+        let toml_src = r#"
+            [fly-apps.revealui-worker]
+            app = "revealui-worker"
+
+            [fly-apps.revealui-worker.vars]
+            POSTGRES_URL = "revealui/prod/db/postgres-url"
+            ELECTRIC_SECRET = "revealui/prod/electric/secret"
+        "#;
+        let manifest: FlyManifest = toml::from_str(toml_src).unwrap();
+        let app = manifest.fly_apps.get("revealui-worker").unwrap();
+        assert_eq!(app.app, "revealui-worker");
+        assert_eq!(app.vars.len(), 2);
+        let (path, shape) = app.vault_path_for("POSTGRES_URL").unwrap();
+        assert_eq!(path, "revealui/prod/db/postgres-url");
+        assert_eq!(shape, Shape::Any);
+        assert!(app.vault_path_for("NOT_DECLARED").is_none());
+    }
+
+    #[test]
+    fn fly_manifest_supports_object_var_with_shape() {
+        let toml_src = r#"
+            [fly-apps.worker]
+            app = "revealui-worker"
+
+            [fly-apps.worker.vars]
+            POSTGRES_URL = { path = "revealui/prod/db/postgres-url", shape = "postgres-url" }
+        "#;
+        let manifest: FlyManifest = toml::from_str(toml_src).unwrap();
+        let app = manifest.fly_apps.get("worker").unwrap();
+        let (_, shape) = app.vault_path_for("POSTGRES_URL").unwrap();
+        assert_eq!(shape, Shape::PostgresUrl);
+    }
+
+    #[test]
+    fn fly_manifest_skip_list_parses() {
+        let toml_src = r#"
+            [fly-apps.worker]
+            app = "revealui-worker"
+            skip = ["NODE_ENV"]
+
+            [fly-apps.worker.vars]
+            FOO = "revealui/prod/foo"
+        "#;
+        let manifest: FlyManifest = toml::from_str(toml_src).unwrap();
+        let app = manifest.fly_apps.get("worker").unwrap();
+        assert!(app.skip.contains(&"NODE_ENV".to_string()));
+    }
+
+    #[test]
+    fn empty_fly_manifest_is_rejected() {
+        // A Vercel-style manifest has no [fly-apps]; unknown fields are ignored,
+        // so it deserializes into an empty FlyManifest. The guard must reject it
+        // rather than let `sync fly` silently no-op.
+        let vercel_like = r#"
+            [projects.revealui-api]
+            project_id = "prj_x"
+            vault_prefix = "revealui/prod"
+        "#;
+        let manifest: FlyManifest = toml::from_str(vercel_like).unwrap();
+        assert!(manifest.fly_apps.is_empty());
+        let err = validate_fly_manifest(&manifest, std::path::Path::new("revvault-vercel.toml"))
+            .unwrap_err();
+        assert!(err.to_string().contains("No [fly-apps"));
+    }
+
+    #[test]
+    fn populated_fly_manifest_passes_validation() {
+        let toml_src = r#"
+            [fly-apps.worker]
+            app = "revealui-worker"
+
+            [fly-apps.worker.vars]
+            FOO = "revealui/prod/foo"
+        "#;
+        let manifest: FlyManifest = toml::from_str(toml_src).unwrap();
+        validate_fly_manifest(&manifest, std::path::Path::new("fly.toml")).unwrap();
     }
 }
