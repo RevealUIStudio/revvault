@@ -80,7 +80,7 @@ revvault sync fly --manifest fly-secrets.toml --apply
 revvault doctor
 
 # Migrate plaintext secret files into the vault
-revvault migrate <source>
+revvault migrate --plaintext-dir <source>
 
 # Delete
 revvault delete revealui/prod/stripe/secret-key
