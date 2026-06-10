@@ -31,6 +31,12 @@ ignore = [
   # for password character selection, never from inside a logger callback.
   # Conditions (b)-(d) cannot be met in this codebase.
   { id = "RUSTSEC-2026-0097", reason = "rand thread_rng unsoundness only triggers via custom logger; revvault has no such logger" },
+  # RUSTSEC-2026-0173: proc-macro-error2 is unmaintained. It is a compile-time
+  # proc-macro support crate pulled in transitively (via the `age` macro stack),
+  # never linked into the runtime binary, so there is no runtime exposure. No
+  # maintained drop-in replacement is wired upstream yet; revisit when the
+  # transitive dependency tree drops it.
+  { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained; compile-time-only transitive proc-macro (via age), absent from the runtime binary, no runtime exposure" },
 ]
 
 [licenses]
