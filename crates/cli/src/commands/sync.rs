@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use revvault_core::sync::fly::FlyClient;
 use revvault_core::sync::shape::{self, Shape};
-use revvault_core::sync::vercel::{VercelClient, VercelEnvVar};
+use revvault_core::sync::vercel::{EnvVarType, VercelClient, VercelEnvVar};
 use revvault_core::{Config, PassageStore};
 
 // ── CLI args ────────────────────────────────────────────────────────────────
@@ -57,21 +57,32 @@ struct ProjectSync {
     /// Skip these env var names (integration-managed, etc.)
     #[serde(default)]
     skip: Vec<String>,
-    /// Per-var path + optional shape overrides.
+    /// Per-var path + optional shape / sensitivity overrides.
     ///
     /// Supports two TOML forms for backwards compatibility:
     ///
-    /// Bare string (path only, shape defaults to `any`):
+    /// Bare string (path only; shape defaults to `any`, sensitive to `false`):
     /// ```toml
     /// [projects.api.vars]
     /// POSTGRES_URL = "revealui/prod/db/postgres-url"
     /// ```
     ///
-    /// Inline table (path + explicit shape):
+    /// Inline table (path + optional `shape` + optional `sensitive`):
     /// ```toml
     /// [projects.api.vars]
-    /// POSTGRES_URL = { path = "revealui/prod/db/postgres-url", shape = "postgres-url" }
+    /// POSTGRES_URL      = { path = "revealui/prod/db/postgres-url", shape = "postgres-url" }
+    /// STRIPE_SECRET_KEY = { path = "revealui/prod/stripe/secret-key", shape = "stripe-key-live-only", sensitive = true }
     /// ```
+    ///
+    /// `sensitive = true` requests Vercel type `sensitive` when this var is
+    /// CREATED: the plaintext is never revealable in the Vercel UI or API
+    /// after write. Use it for credentials (Stripe keys, webhook secrets,
+    /// signing/JWT secrets). Updates PATCH value-only and never change an
+    /// existing row's type, so flipping an existing `encrypted` row still
+    /// requires delete + re-create (the diff flags that drift). Independent
+    /// of the marker, a create also requests `sensitive` whenever any
+    /// existing remote row with the same key is `sensitive` — sensitivity
+    /// is preserved, never silently downgraded.
     #[serde(default)]
     vars: HashMap<String, VarEntry>,
 }
@@ -79,29 +90,58 @@ struct ProjectSync {
 /// A per-var entry in `[projects.<slug>.vars]`.
 ///
 /// `#[serde(untagged)]` makes TOML bare strings parse as `Path(String)`
-/// while inline tables parse as `Object { path, shape }`. Existing manifests
-/// that use bare strings keep working unchanged.
+/// while inline tables parse as `VarObject`. Existing manifests that use
+/// bare strings keep working unchanged.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum VarEntry {
-    /// Bare string — path only; shape defaults to `Shape::Any`.
+    /// Bare string — path only; shape defaults to `Shape::Any`, sensitive
+    /// to `false`.
     Path(String),
-    /// Inline table — path + explicit shape constraint.
-    Object { path: String, shape: Shape },
+    /// Inline table — path + optional shape + optional sensitive marker.
+    Object(VarObject),
+}
+
+/// Inline-table form of a var entry: `{ path = "...", shape = "...",
+/// sensitive = true }`. `shape` defaults to `any`; `sensitive` defaults to
+/// `false`.
+///
+/// Unknown keys are rejected so a typo'd `sensitive` marker fails the
+/// parse loudly instead of silently leaving a credential downgradable.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VarObject {
+    path: String,
+    #[serde(default = "default_shape")]
+    shape: Shape,
+    #[serde(default)]
+    sensitive: bool,
+}
+
+fn default_shape() -> Shape {
+    Shape::Any
 }
 
 impl VarEntry {
     fn path(&self) -> &str {
         match self {
             Self::Path(p) => p,
-            Self::Object { path, .. } => path,
+            Self::Object(o) => &o.path,
         }
     }
 
     fn shape(&self) -> Shape {
         match self {
             Self::Path(_) => Shape::Any,
-            Self::Object { shape, .. } => *shape,
+            Self::Object(o) => o.shape,
+        }
+    }
+
+    /// True when the inline table sets `sensitive = true`.
+    fn sensitive(&self) -> bool {
+        match self {
+            Self::Path(_) => false,
+            Self::Object(o) => o.sensitive,
         }
     }
 }
@@ -115,6 +155,11 @@ impl ProjectSync {
             Some(entry) => (entry.path().to_string(), entry.shape()),
             None => (format!("{}/{}", self.vault_prefix, var_name), Shape::Any),
         }
+    }
+
+    /// True when the manifest marks this var `sensitive = true`.
+    fn sensitive_for(&self, var_name: &str) -> bool {
+        self.vars.get(var_name).is_some_and(|e| e.sensitive())
     }
 }
 
@@ -196,13 +241,18 @@ struct AuditEntry {
     value_shape: String,
     /// "ok" | "failed"
     result: String,
+    /// Vercel env-var type requested on create (`encrypted` | `sensitive`).
+    /// `None` for non-create actions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    var_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
-fn append_audit_log(entry: &AuditEntry) -> anyhow::Result<()> {
-    let config = Config::resolve()?;
-    let log_path = PathBuf::from(&config.store_dir).join(".revvault/rotation-log.jsonl");
+/// Append one JSONL row to the audit log inside the synced store's
+/// `.revvault/` directory.
+fn append_audit_log(store: &PassageStore, entry: &AuditEntry) -> anyhow::Result<()> {
+    let log_path = store.store_dir().join(".revvault/rotation-log.jsonl");
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -284,6 +334,32 @@ fn validate_fly_manifest(manifest: &FlyManifest, path: &std::path::Path) -> anyh
 
 // ── Push mode: sync vault to Vercel ─────────────────────────────────────────
 
+/// Vercel type for a CREATE. `sensitive` is one-way: requested by the
+/// manifest marker or preserved from any existing remote row of the same
+/// key (a credential that is `sensitive` anywhere must never be re-created
+/// as a revealable type). There is no downgrade path.
+fn create_type_for(manifest_sensitive: bool, remote_sensitive: bool) -> EnvVarType {
+    if manifest_sensitive || remote_sensitive {
+        EnvVarType::Sensitive
+    } else {
+        EnvVarType::Encrypted
+    }
+}
+
+/// Diff annotation when the manifest wants `sensitive` but the remote row
+/// has some other type. Updates PATCH value-only — the type is preserved,
+/// never changed — so this drift survives every sync and needs a manual
+/// delete + re-create to resolve. `None` when there is no drift.
+fn type_drift_reason(manifest_sensitive: bool, remote_type: Option<&str>) -> Option<String> {
+    if !manifest_sensitive || remote_type == Some("sensitive") {
+        return None;
+    }
+    Some(format!(
+        "type drift: manifest wants sensitive, remote is {} — updates preserve type; delete + re-create to flip",
+        remote_type.unwrap_or("unknown")
+    ))
+}
+
 async fn push_mode(
     store: &PassageStore,
     client: &VercelClient,
@@ -321,6 +397,16 @@ async fn push_mode(
             .iter()
             .filter(|v| project_cfg.targets.iter().any(|t| v.target.contains(t)))
             .map(|v| (v.key.clone(), v))
+            .collect();
+
+        // Remote rows of ANY target that are Vercel type `sensitive`, by
+        // key. Deliberately NOT filtered by the synced targets: when the
+        // only surviving rows for a credential sit on other targets, a
+        // create on the synced target must still come back `sensitive`.
+        let remote_sensitive: std::collections::HashSet<String> = remote_vars
+            .iter()
+            .filter(|v| v.is_sensitive())
+            .map(|v| v.key.clone())
             .collect();
 
         // Build the union of vars to sync: explicit overrides + everything
@@ -383,7 +469,13 @@ async fn push_mode(
                 continue;
             }
 
-            if remote_map.contains_key(var_name) {
+            if let Some(remote) = remote_map.get(var_name) {
+                // Surface (but never auto-fix) manifest-vs-remote type drift.
+                let drift = type_drift_reason(
+                    project_cfg.sensitive_for(var_name),
+                    remote.var_type.as_deref(),
+                );
+
                 // Check for MATCH: if decrypted remote value equals vault value, skip the write.
                 let is_match = remote_decrypted_map
                     .as_ref()
@@ -395,20 +487,27 @@ async fn push_mode(
                     diff.push(DiffEntry {
                         key: var_name.clone(),
                         action: DiffAction::Match,
-                        reason: None,
+                        reason: drift,
                     });
                 } else {
                     diff.push(DiffEntry {
                         key: var_name.clone(),
                         action: DiffAction::Update,
-                        reason: None,
+                        reason: drift,
                     });
                 }
             } else {
+                let reason = match create_type_for(
+                    project_cfg.sensitive_for(var_name),
+                    remote_sensitive.contains(var_name),
+                ) {
+                    EnvVarType::Sensitive => Some("create as type=sensitive".to_string()),
+                    EnvVarType::Encrypted => None,
+                };
                 diff.push(DiffEntry {
                     key: var_name.clone(),
                     action: DiffAction::Add,
-                    reason: None,
+                    reason,
                 });
             }
         }
@@ -479,50 +578,67 @@ async fn push_mode(
 
                         // Shape guard (should already be DROP'd in diff, but be defensive)
                         if let Err(v) = shape::check(raw, declared_shape) {
-                            let _ = append_audit_log(&AuditEntry {
-                                timestamp: Utc::now().to_rfc3339(),
-                                action: "drop-shape".to_string(),
-                                project: project_name.clone(),
-                                key: entry.key.clone(),
-                                value_shape: shape::classify(raw),
-                                result: "failed".to_string(),
-                                error: Some(v.to_string()),
-                            });
+                            let _ = append_audit_log(
+                                store,
+                                &AuditEntry {
+                                    timestamp: Utc::now().to_rfc3339(),
+                                    action: "drop-shape".to_string(),
+                                    project: project_name.clone(),
+                                    key: entry.key.clone(),
+                                    value_shape: shape::classify(raw),
+                                    result: "failed".to_string(),
+                                    var_type: None,
+                                    error: Some(v.to_string()),
+                                },
+                            );
                             continue;
                         }
 
+                        let var_type = create_type_for(
+                            project_cfg.sensitive_for(&entry.key),
+                            remote_sensitive.contains(&entry.key),
+                        );
                         client
                             .create_env_var(
                                 &project_cfg.project_id,
                                 &entry.key,
                                 raw,
                                 &project_cfg.targets,
+                                var_type,
                             )
                             .await?;
-                        let _ = append_audit_log(&AuditEntry {
-                            timestamp: Utc::now().to_rfc3339(),
-                            action: "create".to_string(),
-                            project: project_name.clone(),
-                            key: entry.key.clone(),
-                            value_shape: shape::classify(raw),
-                            result: "ok".to_string(),
-                            error: None,
-                        });
+                        let _ = append_audit_log(
+                            store,
+                            &AuditEntry {
+                                timestamp: Utc::now().to_rfc3339(),
+                                action: "create".to_string(),
+                                project: project_name.clone(),
+                                key: entry.key.clone(),
+                                value_shape: shape::classify(raw),
+                                result: "ok".to_string(),
+                                var_type: Some(var_type.as_str().to_string()),
+                                error: None,
+                            },
+                        );
                     }
                     DiffAction::Update => {
                         let secret = store.get(&vault_path)?;
                         let raw = secret.expose_secret();
 
                         if let Err(v) = shape::check(raw, declared_shape) {
-                            let _ = append_audit_log(&AuditEntry {
-                                timestamp: Utc::now().to_rfc3339(),
-                                action: "drop-shape".to_string(),
-                                project: project_name.clone(),
-                                key: entry.key.clone(),
-                                value_shape: shape::classify(raw),
-                                result: "failed".to_string(),
-                                error: Some(v.to_string()),
-                            });
+                            let _ = append_audit_log(
+                                store,
+                                &AuditEntry {
+                                    timestamp: Utc::now().to_rfc3339(),
+                                    action: "drop-shape".to_string(),
+                                    project: project_name.clone(),
+                                    key: entry.key.clone(),
+                                    value_shape: shape::classify(raw),
+                                    result: "failed".to_string(),
+                                    var_type: None,
+                                    error: Some(v.to_string()),
+                                },
+                            );
                             continue;
                         }
 
@@ -536,30 +652,38 @@ async fn push_mode(
                                         &project_cfg.targets,
                                     )
                                     .await?;
-                                let _ = append_audit_log(&AuditEntry {
-                                    timestamp: Utc::now().to_rfc3339(),
-                                    action: "update".to_string(),
-                                    project: project_name.clone(),
-                                    key: entry.key.clone(),
-                                    value_shape: shape::classify(raw),
-                                    result: "ok".to_string(),
-                                    error: None,
-                                });
+                                let _ = append_audit_log(
+                                    store,
+                                    &AuditEntry {
+                                        timestamp: Utc::now().to_rfc3339(),
+                                        action: "update".to_string(),
+                                        project: project_name.clone(),
+                                        key: entry.key.clone(),
+                                        value_shape: shape::classify(raw),
+                                        result: "ok".to_string(),
+                                        var_type: None,
+                                        error: None,
+                                    },
+                                );
                             }
                         }
                     }
                     DiffAction::Match => {
                         let secret = store.get(&vault_path)?;
                         let raw = secret.expose_secret();
-                        let _ = append_audit_log(&AuditEntry {
-                            timestamp: Utc::now().to_rfc3339(),
-                            action: "match".to_string(),
-                            project: project_name.clone(),
-                            key: entry.key.clone(),
-                            value_shape: shape::classify(raw),
-                            result: "ok".to_string(),
-                            error: None,
-                        });
+                        let _ = append_audit_log(
+                            store,
+                            &AuditEntry {
+                                timestamp: Utc::now().to_rfc3339(),
+                                action: "match".to_string(),
+                                project: project_name.clone(),
+                                key: entry.key.clone(),
+                                value_shape: shape::classify(raw),
+                                result: "ok".to_string(),
+                                var_type: None,
+                                error: None,
+                            },
+                        );
                     }
                     DiffAction::DropShape => {
                         if !json_output {
@@ -571,15 +695,19 @@ async fn push_mode(
                         }
                         if let Ok(secret) = store.get(&vault_path) {
                             let raw = secret.expose_secret();
-                            let _ = append_audit_log(&AuditEntry {
-                                timestamp: Utc::now().to_rfc3339(),
-                                action: "drop-shape".to_string(),
-                                project: project_name.clone(),
-                                key: entry.key.clone(),
-                                value_shape: shape::classify(raw),
-                                result: "failed".to_string(),
-                                error: entry.reason.clone(),
-                            });
+                            let _ = append_audit_log(
+                                store,
+                                &AuditEntry {
+                                    timestamp: Utc::now().to_rfc3339(),
+                                    action: "drop-shape".to_string(),
+                                    project: project_name.clone(),
+                                    key: entry.key.clone(),
+                                    value_shape: shape::classify(raw),
+                                    result: "failed".to_string(),
+                                    var_type: None,
+                                    error: entry.reason.clone(),
+                                },
+                            );
                         }
                     }
                     DiffAction::Orphan => {
@@ -741,15 +869,19 @@ async fn push_mode_fly(
                     .await
                     .with_context(|| format!("setSecrets failed for Fly app '{}'", app_cfg.app))?;
                 for (key, raw) in &batch {
-                    let _ = append_audit_log(&AuditEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        action: "set-fly".to_string(),
-                        project: app_cfg.app.clone(),
-                        key: key.clone(),
-                        value_shape: shape::classify(raw),
-                        result: "ok".to_string(),
-                        error: None,
-                    });
+                    let _ = append_audit_log(
+                        store,
+                        &AuditEntry {
+                            timestamp: Utc::now().to_rfc3339(),
+                            action: "set-fly".to_string(),
+                            project: app_cfg.app.clone(),
+                            key: key.clone(),
+                            value_shape: shape::classify(raw),
+                            result: "ok".to_string(),
+                            var_type: None,
+                            error: None,
+                        },
+                    );
                 }
                 if !json_output {
                     match result.release_version {
@@ -814,10 +946,11 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert(
             "POSTGRES_URL".to_string(),
-            VarEntry::Object {
+            VarEntry::Object(VarObject {
                 path: "revealui/prod/db/postgres-url".to_string(),
                 shape: Shape::PostgresUrl,
-            },
+                sensitive: false,
+            }),
         );
         let cfg = project_with_vars(vars);
         let (path, shape) = cfg.vault_path_for("POSTGRES_URL");
@@ -923,6 +1056,299 @@ mod tests {
     #[allow(dead_code)]
     fn project_string_only(vars: HashMap<String, String>) -> ProjectSync {
         project_with_string_vars(vars)
+    }
+
+    // ── Sensitive marker (manifest parse + type decision) ────────────────────
+
+    #[test]
+    fn manifest_parses_sensitive_marker() {
+        let toml_src = r#"
+            [projects.api]
+            project_id = "prj_test"
+            vault_prefix = "revealui/vercel/api"
+
+            [projects.api.vars]
+            STRIPE_SECRET_KEY = { path = "revealui/prod/stripe/secret-key", shape = "stripe-key-live-only", sensitive = true }
+            POSTGRES_URL = "revealui/prod/db/postgres-url"
+        "#;
+        let manifest: SyncManifest = toml::from_str(toml_src).unwrap();
+        let api = manifest.projects.get("api").unwrap();
+        assert!(api.sensitive_for("STRIPE_SECRET_KEY"));
+        assert!(!api.sensitive_for("POSTGRES_URL"));
+        // prefix-derived vars carry no marker
+        assert!(!api.sensitive_for("NOT_DECLARED"));
+    }
+
+    #[test]
+    fn manifest_object_entry_shape_is_optional() {
+        let toml_src = r#"
+            [projects.api]
+            project_id = "prj_test"
+            vault_prefix = "revealui/vercel/api"
+
+            [projects.api.vars]
+            REVEALUI_SECRET = { path = "revealui/prod/secret", sensitive = true }
+        "#;
+        let manifest: SyncManifest = toml::from_str(toml_src).unwrap();
+        let api = manifest.projects.get("api").unwrap();
+        let (path, shape) = api.vault_path_for("REVEALUI_SECRET");
+        assert_eq!(path, "revealui/prod/secret");
+        assert_eq!(shape, Shape::Any);
+        assert!(api.sensitive_for("REVEALUI_SECRET"));
+    }
+
+    #[test]
+    fn manifest_rejects_unknown_var_entry_key() {
+        // A typo'd marker must fail the parse loudly — silently ignoring
+        // `sensitve = true` would leave a credential downgradable.
+        let toml_src = r#"
+            [projects.api]
+            project_id = "prj_test"
+            vault_prefix = "revealui/vercel/api"
+
+            [projects.api.vars]
+            STRIPE_SECRET_KEY = { path = "revealui/prod/stripe/secret-key", sensitve = true }
+        "#;
+        assert!(toml::from_str::<SyncManifest>(toml_src).is_err());
+    }
+
+    #[test]
+    fn create_type_for_never_downgrades() {
+        assert_eq!(create_type_for(false, false), EnvVarType::Encrypted);
+        assert_eq!(create_type_for(true, false), EnvVarType::Sensitive);
+        assert_eq!(create_type_for(false, true), EnvVarType::Sensitive);
+        assert_eq!(create_type_for(true, true), EnvVarType::Sensitive);
+    }
+
+    #[test]
+    fn type_drift_reason_only_fires_on_unmet_sensitive_intent() {
+        assert!(type_drift_reason(false, Some("encrypted")).is_none());
+        assert!(type_drift_reason(true, Some("sensitive")).is_none());
+        let drift = type_drift_reason(true, Some("encrypted")).expect("drift");
+        assert!(drift.contains("type drift"), "got: {drift}");
+        assert!(drift.contains("encrypted"), "got: {drift}");
+        let unknown = type_drift_reason(true, None).expect("drift");
+        assert!(unknown.contains("unknown"), "got: {unknown}");
+    }
+
+    // ── push_mode integration (temp store + mock Vercel API) ────────────────
+
+    /// Temp store with a generated age identity — mirrors the pattern from
+    /// core's `rotation::sync_hook` test module.
+    fn setup_temp_store() -> (tempfile::TempDir, PassageStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store_dir = dir.path().join("store");
+        std::fs::create_dir_all(&store_dir).unwrap();
+
+        let id = age::x25519::Identity::generate();
+        let recipient = id.to_public();
+
+        let id_file = dir.path().join("keys.txt");
+        std::fs::write(
+            &id_file,
+            format!(
+                "# test key\n{}\n",
+                secrecy::ExposeSecret::expose_secret(&id.to_string())
+            ),
+        )
+        .unwrap();
+
+        let recip_file = store_dir.join(".age-recipients");
+        std::fs::write(&recip_file, format!("{}\n", recipient)).unwrap();
+
+        let config = Config {
+            store_dir,
+            identity_file: id_file,
+            recipients_file: recip_file,
+            editor: None,
+            tmpdir: None,
+        };
+        let store = PassageStore::open(config).unwrap();
+        (dir, store)
+    }
+
+    fn single_project_manifest(project: ProjectSync) -> SyncManifest {
+        SyncManifest {
+            team_id: None,
+            projects: HashMap::from([("api".to_string(), project)]),
+        }
+    }
+
+    #[tokio::test]
+    async fn push_mode_recreate_preserves_remote_sensitive_type() {
+        // The 2026-06-10 regression class: the synced target has no row
+        // (deleted / rebuilt), but the key still exists as `sensitive` on
+        // another target. The re-create must come back `sensitive` — not
+        // silently downgrade to `encrypted`.
+        let (_dir, store) = setup_temp_store();
+        store
+            .upsert("revealui/prod/stripe/secret-key", b"sk_live_x")
+            .unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let m_list = server
+            .mock("GET", "/projects/prj_p/env")
+            .with_status(200)
+            .with_body(
+                r#"{"envs":[{"id":"e1","key":"STRIPE_SECRET_KEY","target":["preview"],"type":"sensitive"}]}"#,
+            )
+            .create_async()
+            .await;
+        let m_decrypt = server
+            .mock("GET", "/projects/prj_p/env?decrypt=true")
+            .with_status(403)
+            .with_body("{}")
+            .create_async()
+            .await;
+        let m_create = server
+            .mock("POST", "/projects/prj_p/env")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "key": "STRIPE_SECRET_KEY",
+                "target": ["production"],
+                "type": "sensitive",
+            })))
+            .with_status(201)
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut vars = HashMap::new();
+        vars.insert(
+            "STRIPE_SECRET_KEY".to_string(),
+            VarEntry::Path("revealui/prod/stripe/secret-key".to_string()),
+        );
+        let manifest = single_project_manifest(ProjectSync {
+            project_id: "prj_p".to_string(),
+            vault_prefix: "revealui/vercel/api".to_string(),
+            targets: vec!["production".to_string()],
+            skip: vec![],
+            vars,
+        });
+
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        push_mode(&store, &client, &manifest, true, true)
+            .await
+            .unwrap();
+
+        m_list.assert_async().await;
+        m_decrypt.assert_async().await;
+        m_create.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn push_mode_creates_sensitive_when_manifest_marks_it() {
+        let (_dir, store) = setup_temp_store();
+        store
+            .upsert("revealui/prod/secret", b"super-secret-value")
+            .unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let m_list = server
+            .mock("GET", "/projects/prj_p/env")
+            .with_status(200)
+            .with_body(r#"{"envs":[]}"#)
+            .create_async()
+            .await;
+        let m_decrypt = server
+            .mock("GET", "/projects/prj_p/env?decrypt=true")
+            .with_status(403)
+            .with_body("{}")
+            .create_async()
+            .await;
+        let m_create = server
+            .mock("POST", "/projects/prj_p/env")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "key": "REVEALUI_SECRET",
+                "type": "sensitive",
+            })))
+            .with_status(201)
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut vars = HashMap::new();
+        vars.insert(
+            "REVEALUI_SECRET".to_string(),
+            VarEntry::Object(VarObject {
+                path: "revealui/prod/secret".to_string(),
+                shape: Shape::Any,
+                sensitive: true,
+            }),
+        );
+        let manifest = single_project_manifest(ProjectSync {
+            project_id: "prj_p".to_string(),
+            vault_prefix: "revealui/vercel/api".to_string(),
+            targets: vec!["production".to_string()],
+            skip: vec![],
+            vars,
+        });
+
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        push_mode(&store, &client, &manifest, true, true)
+            .await
+            .unwrap();
+
+        m_list.assert_async().await;
+        m_decrypt.assert_async().await;
+        m_create.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn push_mode_creates_encrypted_by_default() {
+        // No marker + no remote history → the default stays `encrypted`.
+        let (_dir, store) = setup_temp_store();
+        store
+            .upsert("revealui/prod/public/api-url", b"https://api.example.com")
+            .unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let m_list = server
+            .mock("GET", "/projects/prj_p/env")
+            .with_status(200)
+            .with_body(r#"{"envs":[]}"#)
+            .create_async()
+            .await;
+        let m_decrypt = server
+            .mock("GET", "/projects/prj_p/env?decrypt=true")
+            .with_status(403)
+            .with_body("{}")
+            .create_async()
+            .await;
+        let m_create = server
+            .mock("POST", "/projects/prj_p/env")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "key": "NEXT_PUBLIC_API_URL",
+                "type": "encrypted",
+            })))
+            .with_status(201)
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut vars = HashMap::new();
+        vars.insert(
+            "NEXT_PUBLIC_API_URL".to_string(),
+            VarEntry::Path("revealui/prod/public/api-url".to_string()),
+        );
+        let manifest = single_project_manifest(ProjectSync {
+            project_id: "prj_p".to_string(),
+            vault_prefix: "revealui/vercel/api".to_string(),
+            targets: vec!["production".to_string()],
+            skip: vec![],
+            vars,
+        });
+
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        push_mode(&store, &client, &manifest, true, true)
+            .await
+            .unwrap();
+
+        m_list.assert_async().await;
+        m_decrypt.assert_async().await;
+        m_create.assert_async().await;
     }
 
     // ── Fly manifest ─────────────────────────────────────────────────────────

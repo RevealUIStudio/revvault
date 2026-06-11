@@ -2,6 +2,44 @@
 
 All notable changes to revvault are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions; versions follow [SemVer 2.0.0](https://semver.org/).
 
+## [0.3.0] — 2026-06-11
+
+### Fixed
+
+- **`sync vercel --apply` no longer downgrades Vercel `sensitive` env vars to
+  `encrypted` on re-create.** `create_env_var` previously hardcoded
+  `type=encrypted`; re-creating a var that existed as `sensitive` (after an
+  external delete, or when the surviving rows sit on non-synced targets)
+  silently made the credential revealable in the Vercel UI — observed
+  2026-06-10 when a sync apply re-created Stripe + signing secrets as
+  `encrypted`. Creates now preserve sensitivity: if any remote row with the
+  same key is `sensitive`, the new row is created `sensitive`. Updates were
+  already safe (the value-only PATCH never touches type).
+
+### Added
+
+- **`sensitive = true` per-var manifest marker.** `[projects.<slug>.vars]`
+  inline tables accept `sensitive = true` to request Vercel type `sensitive`
+  on create: `KEY = { path = "...", sensitive = true }`. The inline table's
+  `shape` is now optional (defaults to `any`). Unknown keys in a var entry
+  are rejected at parse time so a typo'd marker fails loudly instead of
+  silently leaving a credential downgradable. (`revvault doctor` tolerates
+  and ignores the marker — it validates vault values, not Vercel types.)
+- **`sensitive` flag on rotation sync targets.** `[[providers.<name>.sync.vercel.env_vars]]`
+  entries accept `sensitive = true` so the rotation chain's create-fallback
+  also requests type `sensitive`.
+- **Type visibility.** Push diffs annotate creates that will request
+  `sensitive` and warn on type drift (manifest wants `sensitive` but the
+  remote row is not — updates preserve type, so flipping requires delete +
+  re-create). The JSONL audit log records `var_type` on create entries.
+- **Loud type rejection.** If Vercel rejects the requested type, the create
+  fails naming that type — there is no silent fallback to `encrypted`.
+
+### Changed
+
+- The sync audit log now writes to the `.revvault/` directory of the store
+  the sync actually used, instead of re-resolving configuration.
+
 ## [0.2.0] — 2026-05-14
 
 ### Breaking changes

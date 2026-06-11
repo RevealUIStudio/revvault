@@ -13,4 +13,4 @@ pub mod vercel;
 
 pub use fly::{FlyClient, FlySecret};
 pub use shape::{Shape, ShapeViolation};
-pub use vercel::{VercelClient, VercelEnvVar};
+pub use vercel::{EnvVarType, VercelClient, VercelEnvVar};

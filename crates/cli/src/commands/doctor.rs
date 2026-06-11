@@ -51,7 +51,20 @@ struct ProjectSync {
 #[serde(untagged)]
 enum VarEntry {
     Path(String),
-    Object { path: String, shape: Shape },
+    /// Inline table. `shape` is optional (defaults to `any`); keys the
+    /// full sync schema understands but doctor does not act on (e.g.
+    /// `sensitive`) are tolerated and ignored — doctor is a vault-only
+    /// health check and never writes to Vercel, so env-var sensitivity
+    /// does not change what it validates.
+    Object {
+        path: String,
+        #[serde(default = "default_shape")]
+        shape: Shape,
+    },
+}
+
+fn default_shape() -> Shape {
+    Shape::Any
 }
 
 impl VarEntry {
@@ -315,6 +328,28 @@ mod tests {
                 assert!(result.is_ok(), "expected pass for {var_name}: {result:?}");
             }
         }
+    }
+
+    #[test]
+    fn doctor_parses_sensitive_marker_and_optional_shape() {
+        // The sync schema's `sensitive = true` marker (with or without a
+        // declared shape) must not break doctor's manifest subset.
+        let manifest_src = r#"
+            [projects.api]
+            project_id = "prj_test"
+            vault_prefix = "revealui/prod"
+
+            [projects.api.vars]
+            STRIPE_SECRET_KEY = { path = "revealui/prod/stripe/secret-key", shape = "stripe-key-live-only", sensitive = true }
+            REVEALUI_SECRET = { path = "revealui/prod/secret", sensitive = true }
+        "#;
+        let parsed: SyncManifest = toml::from_str(manifest_src).unwrap();
+        let api = parsed.projects.get("api").unwrap();
+        assert_eq!(
+            api.vars.get("STRIPE_SECRET_KEY").unwrap().shape(),
+            Shape::StripeKeyLiveOnly
+        );
+        assert_eq!(api.vars.get("REVEALUI_SECRET").unwrap().shape(), Shape::Any);
     }
 
     #[test]
