@@ -53,6 +53,40 @@ pub struct VercelEnvVar {
     pub configuration_id: Option<String>,
 }
 
+impl VercelEnvVar {
+    /// True when this remote row is Vercel type `sensitive` — encrypted at
+    /// rest AND never returned in plaintext by the UI or API after write.
+    pub fn is_sensitive(&self) -> bool {
+        self.var_type.as_deref() == Some("sensitive")
+    }
+}
+
+/// Env-var `type` written on create.
+///
+/// Vercel distinguishes `encrypted` (encrypted at rest, but any project
+/// member can reveal the plaintext in the UI / API) from `sensitive`
+/// (encrypted at rest, plaintext never returned after write). Credentials
+/// that can charge cards, forge webhooks, or sign tokens belong in
+/// `Sensitive`. This client never writes the other Vercel types (`plain`,
+/// `system`, legacy `secret`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvVarType {
+    /// Vercel default — any project member can reveal the value.
+    Encrypted,
+    /// Write-only after create; the UI/API never return the plaintext.
+    Sensitive,
+}
+
+impl EnvVarType {
+    /// Wire value for the Vercel `type` field.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Encrypted => "encrypted",
+            Self::Sensitive => "sensitive",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct VercelEnvListResponse {
     envs: Vec<VercelEnvVar>,
@@ -178,22 +212,32 @@ impl VercelClient {
         Ok(Some(data.envs))
     }
 
-    /// Create a new env var. The Vercel API rejects duplicates with
-    /// 409; callers detect existing rows via [`Self::list_env_vars`]
-    /// + dispatch to [`Self::update_env_var`] when present.
+    /// Create a new env var with the requested [`EnvVarType`]. The Vercel
+    /// API rejects duplicates with 409; callers detect existing rows via
+    /// [`Self::list_env_vars`] + dispatch to [`Self::update_env_var`] when
+    /// present.
+    ///
+    /// The `type` is part of the POST body. If Vercel rejects the requested
+    /// type, the error names that type and the call fails — there is
+    /// deliberately no fallback that retries with a downgraded type.
+    /// Re-creating a sensitive credential as `encrypted` is the
+    /// silent-downgrade class this parameter closes (observed 2026-06-10:
+    /// a sync apply re-created sensitive Stripe + signing secrets as
+    /// UI-revealable `encrypted` rows).
     pub async fn create_env_var(
         &self,
         project_id: &str,
         key: &str,
         value: &str,
         targets: &[String],
+        var_type: EnvVarType,
     ) -> anyhow::Result<()> {
         let url = self.base_url(project_id);
         let body = serde_json::json!({
             "key": key,
             "value": value,
             "target": targets,
-            "type": "encrypted",
+            "type": var_type.as_str(),
         });
 
         let req = self.client.post(&url).bearer_auth(&self.token).json(&body);
@@ -202,7 +246,13 @@ impl VercelClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            bail!("Failed to create env var '{}': {} {}", key, status, body);
+            bail!(
+                "Failed to create env var '{}' (requested type={}): {} {}",
+                key,
+                var_type.as_str(),
+                status,
+                body
+            );
         }
         Ok(())
     }
@@ -391,9 +441,70 @@ mod tests {
                 "POSTGRES_URL",
                 "postgres://...",
                 &["production".to_string()],
+                EnvVarType::Encrypted,
             )
             .await
             .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn create_env_var_posts_sensitive_type_when_requested() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/projects/p/env")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "key": "STRIPE_SECRET_KEY",
+                "type": "sensitive",
+            })))
+            .with_status(201)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        client
+            .create_env_var(
+                "p",
+                "STRIPE_SECRET_KEY",
+                "sk_live_x",
+                &["production".to_string()],
+                EnvVarType::Sensitive,
+            )
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn create_env_var_rejected_type_fails_loudly_naming_the_type() {
+        // If the API refuses the requested type there must be no silent
+        // fallback to a downgraded type — the error surfaces and names it.
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/projects/p/env")
+            .with_status(400)
+            .with_body(r#"{"error":{"message":"type not allowed"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        let err = client
+            .create_env_var(
+                "p",
+                "STRIPE_SECRET_KEY",
+                "sk_live_x",
+                &["production".to_string()],
+                EnvVarType::Sensitive,
+            )
+            .await
+            .expect_err("400 must surface");
+        let msg = format!("{err}");
+        assert!(msg.contains("type=sensitive"), "got: {msg}");
+        assert!(msg.contains("400"), "got: {msg}");
 
         mock.assert_async().await;
     }

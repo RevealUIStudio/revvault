@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::PassageStore;
 use crate::sync::shape::{self, Shape, ShapeViolation};
-use crate::sync::vercel::VercelClient;
+use crate::sync::vercel::{EnvVarType, VercelClient};
 
 /// Per-provider sync block. Today only Vercel is supported; this
 /// shape leaves room for future targets (`github`, `cloudflare`,
@@ -69,6 +69,12 @@ pub struct VercelEnvVarRef {
     /// Targets to apply the value to. Default `["production"]`.
     #[serde(default = "default_targets")]
     pub targets: Vec<String>,
+    /// Request Vercel type `sensitive` when the sync has to CREATE this
+    /// env var (absent on the project). Updates PATCH value-only and never
+    /// change an existing row's type. Default `false` (creates as
+    /// `encrypted`).
+    #[serde(default)]
+    pub sensitive: bool,
 }
 
 fn default_targets() -> Vec<String> {
@@ -270,8 +276,19 @@ async fn push_to_vercel(
                     .await
             }
             None => {
+                let var_type = if ev.sensitive {
+                    EnvVarType::Sensitive
+                } else {
+                    EnvVarType::Encrypted
+                };
                 client
-                    .create_env_var(&vercel_ref.project_id, &ev.name, value_str, &ev.targets)
+                    .create_env_var(
+                        &vercel_ref.project_id,
+                        &ev.name,
+                        value_str,
+                        &ev.targets,
+                        var_type,
+                    )
                     .await
             }
         };
@@ -307,6 +324,17 @@ mod tests {
         let ev: VercelEnvVarRef = toml::from_str(toml_src).unwrap();
         assert_eq!(ev.name, "POSTGRES_URL");
         assert_eq!(ev.targets, vec!["production".to_string()]);
+        assert!(!ev.sensitive, "sensitive must default to false");
+    }
+
+    #[test]
+    fn vercel_env_var_ref_sensitive_marker_parses() {
+        let toml_src = r#"
+            name = "STRIPE_WEBHOOK_SECRET"
+            sensitive = true
+        "#;
+        let ev: VercelEnvVarRef = toml::from_str(toml_src).unwrap();
+        assert!(ev.sensitive);
     }
 
     #[test]
@@ -449,10 +477,12 @@ mod tests {
                     VercelEnvVarRef {
                         name: "POSTGRES_URL".into(),
                         targets: vec!["production".into(), "preview".into()],
+                        sensitive: false,
                     },
                     VercelEnvVarRef {
                         name: "POSTGRES_NEW".into(),
                         targets: vec!["production".into()],
+                        sensitive: false,
                     },
                 ],
             }),
@@ -490,6 +520,7 @@ mod tests {
                 env_vars: vec![VercelEnvVarRef {
                     name: "POSTGRES_URL".into(),
                     targets: vec!["production".into()],
+                    sensitive: false,
                 }],
             }),
         };
@@ -505,6 +536,64 @@ mod tests {
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].status, "failed");
         assert!(log[0].error.as_deref().unwrap_or("").contains("api-token"));
+    }
+
+    /// The rotation chain's create-fallback honors `sensitive = true`:
+    /// a rotated credential that has to be created fresh must not land
+    /// as a UI-revealable `encrypted` row.
+    #[tokio::test]
+    async fn rotation_create_fallback_requests_sensitive_when_marked() {
+        let (_dir, store) = setup_temp_store();
+        store
+            .upsert("credentials/vercel/api-token", b"token-x")
+            .unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let m_list = server
+            .mock("GET", "/projects/prj/env")
+            .with_status(200)
+            .with_body(r#"{"envs":[]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let m_create = server
+            .mock("POST", "/projects/prj/env")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "key": "STRIPE_WEBHOOK_SECRET",
+                "type": "sensitive",
+            })))
+            .with_status(201)
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let sync = SyncConfig {
+            vercel: Some(VercelSyncRef {
+                api_token_path: "credentials/vercel/api-token".into(),
+                project_id: "prj".into(),
+                team_id: None,
+                env_vars: vec![VercelEnvVarRef {
+                    name: "STRIPE_WEBHOOK_SECRET".into(),
+                    targets: vec!["production".into()],
+                    sensitive: true,
+                }],
+            }),
+        };
+
+        let log = apply_sync_after_rotation_inner(
+            &store,
+            &sync,
+            &SecretString::from("whsec_new"),
+            Some(&server.url()),
+        )
+        .await;
+
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].status, "success", "row failed: {:?}", log[0]);
+
+        m_list.assert_async().await;
+        m_create.assert_async().await;
     }
 
     /// Proves the bug class: a rotation provider returning an empty string
@@ -524,6 +613,7 @@ mod tests {
                 env_vars: vec![VercelEnvVarRef {
                     name: "POSTGRES_URL".into(),
                     targets: vec!["production".into()],
+                    sensitive: false,
                 }],
             }),
         };
@@ -553,6 +643,7 @@ mod tests {
                 env_vars: vec![VercelEnvVarRef {
                     name: "POSTGRES_URL".into(),
                     targets: vec!["production".into()],
+                    sensitive: false,
                 }],
             }),
         };

@@ -160,6 +160,13 @@ skip = ["VERCEL_AUTOMATION_TOKEN"] # var names to skip (integration-managed, etc
 [projects.revealui-prod.vars]
 DATABASE_URL = "revealui/prod/neon/postgres-url"
 STRIPE_SECRET_KEY = "revealui/prod/stripe/secret-key"
+
+# Inline-table form — optional `shape` constraint + optional `sensitive` marker.
+# sensitive = true requests Vercel type `sensitive` on CREATE: the plaintext is
+# never revealable in the Vercel UI/API after write. Use for credentials
+# (Stripe keys, webhook secrets, signing/JWT secrets). Updates PATCH value-only
+# and never change an existing row's type (flip = delete + re-create).
+STRIPE_WEBHOOK_SECRET = { path = "revealui/prod/stripe/webhook-secret", shape = "stripe-webhook", sensitive = true }
 ```
 
 The default behavior maps every `<vault_prefix>/<name>` to env var `NAME` for each target in `targets`. The per-var `[projects.<slug>.vars]` table maps a Vercel var name to a literal vault path, overriding the default prefix-based naming.
@@ -167,6 +174,8 @@ The default behavior maps every `<vault_prefix>/<name>` to env var `NAME` for ea
 ### Sync semantics
 
 - `value-only PATCH` to Vercel API to preserve env-var type + target on update (`aa5ebf5`)
+- CREATE requests Vercel type `sensitive` when the manifest marks the var `sensitive = true` OR any existing remote row with the same key is `sensitive` (preserve-on-re-create; sensitivity is never silently downgraded — 0.3.0). A rejected type fails the apply loudly naming the requested type; there is no fallback to `encrypted`.
+- Type drift (manifest wants `sensitive`, remote row is not) is surfaced as a diff annotation; flipping an existing row requires delete + re-create.
 - `remote_map` filtered by `target` to avoid multi-environment ID collision (`b571920`)
 - Manifest schema enforced via `serde` deserialization
 - Dry-run prints unified diff between vault state and remote state
