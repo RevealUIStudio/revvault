@@ -10,6 +10,6 @@ on:
 
 jobs:
   backflow:
-    # Pinned to immutable SHA (resolved 2026-05-28); update via gh api repos/RevealUIStudio/.github/commits/main
-    uses: RevealUIStudio/.github/.github/workflows/backflow-reusable.yml@70e208a976bbdf46516135fba83aee02fe5718da
+    # Pinned to immutable SHA (resolved 2026-06-12); update via gh api repos/RevealUIStudio/.github/commits/main
+    uses: RevealUIStudio/.github/.github/workflows/backflow-reusable.yml@018dbca12f2b6588b456cb2f450aadf4814729cd # main @ 2026-06-12
     secrets: inherit
