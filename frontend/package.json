@@ -11,7 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-shell": "^2.0.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
@@ -29,6 +29,11 @@
     "tailwindcss": "^4.3.1",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.9"
+  },
+  "pnpm": {
+    "overrides": {
+      "undici": ">=7.28.0 <8"
+    }
   }
 }
