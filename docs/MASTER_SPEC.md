@@ -87,7 +87,7 @@ revealui/prod/neon/postgres-url
 revealui/prod/stripe/secret-key
 revealui/prod/stripe/webhook-secret
 revealcoin/mint-authority.json
-revdev/license-signing-key
+revdev/license-signing-private-key
 credentials/github/<account>
 credentials/anthropic/<account>
 ssh/<host>/<key-name>
