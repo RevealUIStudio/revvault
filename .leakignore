@@ -9,3 +9,8 @@
 # Test fixtures use a generic placeholder username in store_dir /
 # identity_file path fixtures (not a real developer's home).
 frontend/src/components/SetupScreen.test.tsx   abs-home-path
+
+# By-design: the anti-regression CI job must name the /mnt/c/Users literal in
+# its grep pattern to scan for it. This is the workflow that enforces the
+# rule, not a leak of it (mirrors revkit's bare-username entry).
+.github/workflows/ci.yml                abs-wsl-windows-user
