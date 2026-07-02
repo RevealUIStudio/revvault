@@ -1,0 +1,27 @@
+# cargo-audit configuration.
+#
+# Ignores are TEMPORARY, scoped to exact advisory IDs, and each entry must
+# carry: why it is unreachable, the exposure assessment, and the removal
+# condition. Empty ignore list is the steady state. Every entry here MUST
+# be paired with a stale-ignore guard step in the ci.yml audit job that
+# fails the build when the entry becomes removable — an ignore is never
+# allowed to outlive its justification silently.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0194 + RUSTSEC-2026-0195: quick-xml < 0.41.0 NsReader
+    # memory-exhaustion DoS (severity 7.5). Transitive-only: quick-xml
+    # comes in via plist -> tauri-utils (Tauri bundler/config plist
+    # parsing); revvault code never feeds it attacker-controlled input at
+    # runtime, and the impact is availability-only (no secrecy impact).
+    # The fix (quick-xml 0.41.0) is unreachable today: latest plist 1.9.0
+    # requires quick-xml ^0.39 (lockfile is bumped to plist 1.9.0 /
+    # quick-xml 0.39.4, the closest reachable versions). Upstream bump is
+    # tracked at https://github.com/ebarnard/rust-plist/issues/191.
+    # REMOVAL: enforced by the "Stale-ignore guard" step in ci.yml — it
+    # fails the audit job as soon as `cargo update -p plist` can reach
+    # quick-xml >=0.41; at that point bump the lockfile, delete both
+    # entries, and delete the guard step.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

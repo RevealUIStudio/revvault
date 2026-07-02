@@ -222,6 +222,24 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: cargo audit
         run: cargo audit
+      - name: Stale-ignore guard — RUSTSEC-2026-0194/0195 (quick-xml)
+        # .cargo/audit.toml carries two quick-xml ignores that are valid
+        # ONLY while the fix (quick-xml >=0.41) is unreachable through
+        # plist (upstream: ebarnard/rust-plist#191). The moment a plist
+        # release makes it reachable, this step fails the build so the
+        # ignores cannot silently outlive their justification. Then: run
+        # `cargo update -p plist`, delete both ignores from
+        # .cargo/audit.toml, and delete this step.
+        run: |
+          target="$(cargo update --dry-run -p plist 2>&1 | awk '/Updating quick-xml/ {print $NF}')"
+          echo "quick-xml reachable via 'cargo update -p plist': ${target:-none (lockfile already at ceiling)}"
+          case "$target" in
+            ""|v0.39.*|v0.40.*)
+              echo "quick-xml >=0.41 still unreachable — the audit.toml ignores remain justified." ;;
+            *)
+              echo "::error::quick-xml $target is now reachable; >=0.41 fixes RUSTSEC-2026-0194/0195. Bump the lockfile, remove both ignores from .cargo/audit.toml, and delete this guard step."
+              exit 1 ;;
+          esac
 
   deny:
     # cargo-deny checks: license compliance (allow-list in deny.toml),
