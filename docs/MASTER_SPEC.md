@@ -57,7 +57,7 @@ The frontend never touches `core` directly — it goes through `tauri-app` IPC. 
 | Command | Purpose | Example |
 |---|---|---|
 | `revvault get <path>` | Decrypt + print one secret to stdout (or clipboard via `--clip`) | `revvault get credentials/stripe/secret-key` |
-| `revvault get --json <path>` | JSON output (path + value) — use this in non-TTY contexts; bare `get` returns empty in `$()` (per memory `feedback_revvault_get_silent_in_subshell`) | `revvault --json get credentials/stripe/secret-key \| jq -r .value` |
+| `revvault get --json <path>` | JSON output (path + value) — use this in non-TTY contexts; bare `get` returns empty in `$()` | `revvault --json get credentials/stripe/secret-key \| jq -r .value` |
 | `revvault set <path>` | Encrypt + store from stdin or interactive prompt | `echo "sk_live_..." \| revvault set credentials/stripe/secret-key` |
 | `revvault list [<prefix>]` | List secret paths, optionally namespace-filtered | `revvault list credentials/` |
 | `revvault search <query>` | Fuzzy search across paths | `revvault search stripe` |
@@ -86,7 +86,6 @@ revealui/dev/electric/secret
 revealui/prod/neon/postgres-url
 revealui/prod/stripe/secret-key
 revealui/prod/stripe/webhook-secret
-revealcoin/mint-authority.json
 revdev/license-signing-private-key
 credentials/github/<account>
 credentials/anthropic/<account>
@@ -108,8 +107,6 @@ $HOME/.revealui/passage-store/             # default vault root
 │   │   │   └── secret.age
 │   │   └── admin-session-cookie.age
 │   └── prod/...
-├── revealcoin/
-│   └── mint-authority.json.age
 ├── credentials/
 │   └── github/joshua.age
 └── ...
@@ -143,7 +140,7 @@ The desktop app is currently used internally; public release is **Phase 2** in `
 
 ### Vercel sync manifest
 
-Per the internal agent-memory entry `reference_revvault_sync_schema_prefix_with_override` (developer-local):
+Example `revvault-vercel.toml` manifest:
 
 ```toml
 # revvault-vercel.toml — schema per crates/cli/src/commands/sync.rs ProjectSync
@@ -215,7 +212,7 @@ Pre-1.0 per the fleet versioning convention (RevealUI Studio internal). Cargo wo
 | Other product | Relationship |
 |---|---|
 | **RevealUI** | Consumer — every secret in RevealUI's `.env`/CI/runbook lives in RevVault per `secrets.md` rule |
-| **RevealCoin** | Consumer — keypair files (`revealcoin/mint-authority.json`, etc.) stored as `.age` files |
+| **RevealCoin** _(cancelled 2026-05-29)_ | Former consumer — its keypair files were destroyed when the product was cancelled; no longer a vault consumer |
 | **RevDev** | Consumer — license signing keys |
 | **RevForge** | Consumer — per-customer secrets at `forge/customers/<slug>/*` paths in vault |
 | **RevKit** | Sets up the age-identity mount path RevVault expects (`~/.age-identity/keys.txt`) |
