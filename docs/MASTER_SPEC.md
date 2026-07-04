@@ -57,7 +57,7 @@ The frontend never touches `core` directly — it goes through `tauri-app` IPC. 
 | Command | Purpose | Example |
 |---|---|---|
 | `revvault get <path>` | Decrypt + print one secret to stdout (or clipboard via `--clip`) | `revvault get credentials/stripe/secret-key` |
-| `revvault get --json <path>` | JSON output (path + value) — use this in non-TTY contexts; bare `get` returns empty in `$()` (per memory `feedback_revvault_get_silent_in_subshell`) | `revvault --json get credentials/stripe/secret-key \| jq -r .value` |
+| `revvault get --json <path>` | JSON output (path + value) — use this in non-TTY contexts; bare `get` returns empty in `$()` | `revvault --json get credentials/stripe/secret-key \| jq -r .value` |
 | `revvault set <path>` | Encrypt + store from stdin or interactive prompt | `echo "sk_live_..." \| revvault set credentials/stripe/secret-key` |
 | `revvault list [<prefix>]` | List secret paths, optionally namespace-filtered | `revvault list credentials/` |
 | `revvault search <query>` | Fuzzy search across paths | `revvault search stripe` |
@@ -140,7 +140,7 @@ The desktop app is currently used internally; public release is **Phase 2** in `
 
 ### Vercel sync manifest
 
-Per the internal agent-memory entry `reference_revvault_sync_schema_prefix_with_override` (developer-local):
+Example `revvault-vercel.toml` manifest:
 
 ```toml
 # revvault-vercel.toml — schema per crates/cli/src/commands/sync.rs ProjectSync
