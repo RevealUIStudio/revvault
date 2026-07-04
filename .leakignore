@@ -14,3 +14,10 @@ frontend/src/components/SetupScreen.test.tsx   abs-home-path
 # its grep pattern to scan for it. This is the workflow that enforces the
 # rule, not a leak of it (mirrors revkit's bare-username entry).
 .github/workflows/ci.yml                abs-wsl-windows-user
+
+# By-design: the issue/PR-body leak-scan gitleaks config (consumed by
+# .github/workflows/issue-leak-scan.yml) must name the private-path and
+# username literals in its detection regexes + keywords to catch them in
+# issue bodies. This is the config that enforces the rule, not a leak of
+# it (mirrors the ci.yml anti-regression entries).
+.gitleaks.issues.toml                   lit-username,abs-home-path,private-jv-repo,private-jv-name
