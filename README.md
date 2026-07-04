@@ -106,7 +106,7 @@ Paths are lower-kebab, grouped by repo or product, then by subsystem:
 | `revealui/prod/<subsystem>/<name>` | `revealui/prod/neon/postgres-url`, `revealui/prod/stripe/secret-key`, `revealui/prod/stripe/webhook-secret` |
 | `revealui/prod/storage/r2/<name>` | `revealui/prod/storage/r2/access-key-id` |
 | `revforge/customers/<slug>/<name>` | `revforge/customers/acme/admin-password` |
-| `revdev/<name>` | `revdev/license-signing-key` |
+| `revdev/<name>` | `revdev/license-signing-private-key` |
 | `credentials/<system>/<name>` | `credentials/github/personal-token`, `credentials/anthropic/api-key` |
 
 New paths get a `docs/SECRETS.md` entry in the relevant repo. Mirroring to CI is a publish step, never hand-typed.

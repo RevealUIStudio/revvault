@@ -72,7 +72,7 @@ The Pro-tier commercial offering wraps the RevealUI license: RevealUI Pro unlock
 
 ### `feat/sync-per-var-path-override` (current branch)
 
-Per-variable vault-path overrides for Vercel sync. Manifest schema gains `[projects.<slug>.vars]` table for case-by-case overrides where the default `[projects.<slug>] vault_prefix` is wrong. Surfacing reference: internal agent-memory entry `reference_revvault_sync_schema_prefix_with_override` (developer-local).
+Per-variable vault-path overrides for Vercel sync. Manifest schema gains `[projects.<slug>.vars]` table for case-by-case overrides where the default `[projects.<slug>] vault_prefix` is wrong.
 
 **In scope:** schema parsing, conflict resolution between `vault_prefix` and per-var overrides, sync logic.
 **Out of scope:** UI for editing overrides, rotation hooks for overridden vars (defer to follow-on).

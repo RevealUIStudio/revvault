@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-no-private-leaks.sh
 #
-# Scans a public-facing directory (default: the revskills repo root) for
+# Scans a public-facing directory (default: the revvault repo root) for
 # references to private filesystem paths, private repos, or machine-local
 # user homes that must not appear in public artifacts.
 #
@@ -37,8 +37,10 @@ unset _path
 # Each entry: tag|ERE_regex|reason
 # Anchored where possible to keep false-positive noise low.
 PATTERNS=(
+  "lit-username|joshua[-]v-dev|literal developer username; use a placeholder"
   "abs-home-path|/home/[a-z][a-z0-9_-]+|absolute user home path (/home/<username>/...)"
   "abs-windows-user|[Cc]:[\\\\/]Users[\\\\/][A-Za-z0-9_-]+|absolute Windows user path (C:\\\\Users\\\\<name>)"
+  "abs-wsl-windows-user|/mnt/[a-z]/Users/[A-Za-z0-9_-]+|WSL mount of a Windows user path (/mnt/c/Users/<name>)"
   "private-jv-repo|/?revfleet/\\.jv|private repo path (~/revfleet/.jv/...)"
   "private-jv-name|revealui-jv|private repo name (revealui-jv)"
   "lts-drive|/mnt/e/|LTS drive mount path"
