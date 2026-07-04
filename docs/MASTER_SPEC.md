@@ -86,7 +86,6 @@ revealui/dev/electric/secret
 revealui/prod/neon/postgres-url
 revealui/prod/stripe/secret-key
 revealui/prod/stripe/webhook-secret
-revealcoin/mint-authority.json
 revdev/license-signing-private-key
 credentials/github/<account>
 credentials/anthropic/<account>
@@ -108,8 +107,6 @@ $HOME/.revealui/passage-store/             # default vault root
 │   │   │   └── secret.age
 │   │   └── admin-session-cookie.age
 │   └── prod/...
-├── revealcoin/
-│   └── mint-authority.json.age
 ├── credentials/
 │   └── github/joshua.age
 └── ...
@@ -215,7 +212,7 @@ Pre-1.0 per the fleet versioning convention (RevealUI Studio internal). Cargo wo
 | Other product | Relationship |
 |---|---|
 | **RevealUI** | Consumer — every secret in RevealUI's `.env`/CI/runbook lives in RevVault per `secrets.md` rule |
-| **RevealCoin** | Consumer — keypair files (`revealcoin/mint-authority.json`, etc.) stored as `.age` files |
+| **RevealCoin** _(cancelled 2026-05-29)_ | Former consumer — its keypair files were destroyed when the product was cancelled; no longer a vault consumer |
 | **RevDev** | Consumer — license signing keys |
 | **RevForge** | Consumer — per-customer secrets at `forge/customers/<slug>/*` paths in vault |
 | **RevKit** | Sets up the age-identity mount path RevVault expects (`~/.age-identity/keys.txt`) |
