@@ -7,14 +7,14 @@ Per the fleet-wide [secrets rule](https://github.com/RevealUIStudio/revealui/blo
 ## Features
 
 - **Encrypted at rest** — `.age` files using x25519 key exchange (the `age` crate, 0.11)
-- **CLI** — `init`, `get`, `set`, `generate`, `list`, `search`, `export-env`, `edit`, `delete`, `migrate`, `sync`, `doctor`, `completions`, plus `rotation-status` (and `rotate`, which is `[PLANNED]`). Global `--json` flag for structured output on every command.
+- **CLI.** `init`, `get`, `set`, `generate`, `list`, `search`, `export-env`, `edit`, `delete`, `migrate`, `sync`, `doctor`, `completions`, `rotate`, `rotation-status`. Global `--json` flag for structured output on every command.
 - **Editing** — `edit` decrypts to `$EDITOR` (or the editor configured in `config.toml`) and re-encrypts on save. With no editor set it falls back to a built-in ratatui TUI editor. Decrypted plaintext only ever lands in a tmpfs/`memfd`-backed temp path that is zeroized and unlinked on exit.
 - **Password generation** — `generate` produces a strong random password (configurable length, optional `--no-symbols` / `--no-ambiguous`), printed, copied to clipboard, or stored under a path.
 - **Desktop app** — Tauri 2 backend (`crates/tauri-app`) + React 19 frontend (`frontend/`)
 - **Namespaces** — secrets are organized by their first path segment. Built-in namespaces are `revealui/`, `credentials/`, `ssh/`, and `misc/`; any other first segment is treated as a dynamic project namespace (e.g. `revforge/`, `revdev/`).
 - **Fuzzy search** — `search` finds secrets by partial path match
 - **Migration** — `migrate` imports plaintext secret files from external sources with automatic categorization
-- **Rotation** — `crates/core` ships a rotation engine (a provider trait with `local`, `http`, and `neon` providers, plus sync hooks); `rotation-status` reports current state. The `rotate` action command is `[PLANNED]`.
+- **Rotation.** `revvault rotate <provider>` runs a full rotation against `local`, `http`, or `neon` providers (auto-selected via `type` in `rotation.toml`): reads the current key, dispatches the provider, validates the returned value's shape, writes the new key back, applies the optional post-rotation sync hook, runs `post_rotate` hooks (warn-on-failure) and an optional strict `verify` gate, then appends a log entry. `--dry-run` previews the plan without touching the vault or any API. `rotation-status` reports the last 10 log entries.
 - **Downstream sync** — `sync vercel` and `sync fly` push vault secrets to Vercel env vars / Fly app secrets, driven by a TOML manifest. Dry-run by default (`--apply` to write), with declared-shape validation, orphan detection, a strict no-auto-delete policy, and an append-only audit log.
 - **Path validation** — directory traversal and injection attacks blocked
 - **Health check** — `doctor` reads every manifest entry and validates value shapes against their declared types
@@ -68,6 +68,14 @@ revvault edit revealui/prod/stripe/secret-key
 
 # Export as KEY=VALUE for shell eval
 eval "$(revvault export-env revealui/prod/stripe/secret-key)"
+
+# Rotate a provider's key (dry-run, then apply).
+# The provider must match a [providers.<name>] block in .revvault/rotation.toml
+revvault rotate vercel --dry-run
+revvault rotate vercel
+
+# Show the last 10 rotation log entries
+revvault rotation-status
 
 # Push vault secrets to Vercel env vars (dry-run, then apply)
 revvault sync vercel --manifest revvault-vercel.toml
@@ -131,7 +139,7 @@ crates/tauri-app  — Tauri 2 desktop backend
 frontend/         — React 19 + TypeScript + Tailwind CSS v4 (Vite)
 ```
 
-Workspace at version `0.2.0` (pre-1.0 per fleet versioning).
+Workspace at version `0.3.0` (pre-1.0 per fleet versioning).
 
 ## Store Format
 

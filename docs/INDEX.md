@@ -1,12 +1,12 @@
 ---
 type: repo-doc-index
 repo: revvault
-updated: 2026-05-15
+updated: 2026-07-11
 ---
 
 # RevVault — Documentation Index
 
-Age-encrypted credential vault for RevFleet. CLI + Tauri desktop app + MCP server.
+Age-encrypted credential vault for RevFleet. CLI + Tauri desktop app.
 
 ## This repo's masters
 

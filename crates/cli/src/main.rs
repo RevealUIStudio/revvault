@@ -38,7 +38,7 @@ enum Commands {
     Completions(commands::completions::CompletionsArgs),
     /// Migrate secrets from external sources
     Migrate(commands::migrate::MigrateArgs),
-    /// `[PLANNED]` Rotate API keys for a provider
+    /// Rotate API keys for a provider
     Rotate(commands::rotate::RotateArgs),
     /// Show rotation status
     RotationStatus,
