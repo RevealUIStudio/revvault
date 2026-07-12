@@ -41,6 +41,44 @@ fn revvault_cmd(store: &str, identity: &str) -> Command {
 }
 
 #[test]
+fn bare_invocation_shows_full_help_with_examples() {
+    assert_cmd::cargo::cargo_bin_cmd!("revvault")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("Examples:").and(predicate::str::contains("revvault init")),
+        );
+}
+
+#[test]
+fn set_empty_stdin_fails() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("misc/empty")
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no input provided on stdin"));
+}
+
+#[test]
+fn uninitialized_vault_points_to_init() {
+    // Point both the explicit store override and the home-derived default at
+    // paths that do not exist, so store resolution fails as on a fresh machine.
+    let dir = tempfile::tempdir().unwrap();
+    assert_cmd::cargo::cargo_bin_cmd!("revvault")
+        .env("REVVAULT_STORE", dir.path().join("missing-store"))
+        .env("HOME", dir.path())
+        .env_remove("WINDOWS_USERNAME")
+        .arg("list")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("revvault init"));
+}
+
+#[test]
 fn list_empty_store() {
     let (_dir, store, identity) = setup_temp_store();
     revvault_cmd(&store, &identity)
