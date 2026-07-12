@@ -1,9 +1,6 @@
 use clap::Args;
 use serde_json::json;
 
-use revvault_core::Config;
-use revvault_core::PassageStore;
-
 #[derive(Args)]
 pub struct DeleteArgs {
     /// Secret path to delete
@@ -26,8 +23,7 @@ pub fn run(args: DeleteArgs, json_output: bool) -> anyhow::Result<()> {
         }
     }
 
-    let config = Config::resolve()?;
-    let store = PassageStore::open(config)?;
+    let store = super::open_store()?;
     store.delete(&args.path)?;
 
     if json_output {

@@ -2,9 +2,6 @@ use clap::Args;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
-use revvault_core::Config;
-use revvault_core::PassageStore;
-
 #[derive(Args)]
 pub struct ExportEnvArgs {
     /// Secret path (multiline secrets become KEY=VALUE lines)
@@ -49,8 +46,7 @@ fn parse_env_vars(path: &str, value: &str) -> Vec<(String, String)> {
 }
 
 pub fn run(args: ExportEnvArgs, json_output: bool) -> anyhow::Result<()> {
-    let config = Config::resolve()?;
-    let store = PassageStore::open(config)?;
+    let store = super::open_store()?;
     let secret = store.get(&args.path)?;
     let value = secret.expose_secret();
 

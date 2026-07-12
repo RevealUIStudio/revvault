@@ -3,9 +3,6 @@ use std::collections::BTreeMap;
 use clap::Args;
 use serde_json::json;
 
-use revvault_core::Config;
-use revvault_core::PassageStore;
-
 #[derive(Args)]
 pub struct ListArgs {
     /// Filter by path prefix
@@ -17,8 +14,7 @@ pub struct ListArgs {
 }
 
 pub fn run(args: ListArgs, json_output: bool) -> anyhow::Result<()> {
-    let config = Config::resolve()?;
-    let store = PassageStore::open(config)?;
+    let store = super::open_store()?;
     let entries = store.list(args.prefix.as_deref())?;
 
     if json_output {

@@ -1,14 +1,14 @@
 ---
 type: master-spec
 repo: revvault
-last-updated: 2026-05-10
+last-updated: 2026-07-11
 owner: RevealUI Studio
 staleness-status: FRESH
 ---
 
 # RevVault — Master Spec
 
-**Last Updated:** 2026-05-10
+**Last Updated:** 2026-07-11
 **Status:** Pre-1.0 — production-grade for studio internal use; surface area stable
 **Repo:** [RevealUIStudio/revvault](https://github.com/RevealUIStudio/revvault)
 
@@ -69,6 +69,8 @@ The frontend never touches `core` directly — it goes through `tauri-app` IPC. 
 | `revvault sync vercel --apply [--manifest <path>]` | Push vault values to Vercel; shape-validates each value before the API call | `revvault sync vercel --apply` |
 | `revvault sync vercel --token <token> ...` | Override Vercel API token (or set `VERCEL_TOKEN` env var) | `revvault sync vercel --apply --token $VERCEL_TOKEN` |
 | `revvault doctor [--manifest <path>] [--json]` | **0.2.0+** Vault-only health check — validates every manifest entry against its declared shape; exit 0 = all pass, exit 1 = failures found. Never touches Vercel. | `revvault doctor --manifest revvault-vercel.toml` |
+| `revvault rotate <provider> [--dry-run]` | Run a full rotation for a `[providers.<name>]` block in `.revvault/rotation.toml`: dispatches to the `local`/`http`/`neon` provider, shape-validates the returned value, writes it to the vault, runs the sync hook + `post_rotate` hooks + optional strict `verify` gate, appends a log entry. `--dry-run` previews the plan without touching the vault or any API. | `revvault rotate vercel --dry-run` |
+| `revvault rotation-status` | Print the last 10 entries from `.revvault/rotation-log.jsonl` | `revvault rotation-status` |
 
 ### Path conventions
 
@@ -116,7 +118,7 @@ Each `.age` file is the encrypted secret. Filenames preserve the secret's logica
 
 ### Identity
 
-The age identity is read from `~/.age-identity/keys.txt` by default (override via `--identity <path>`). This file should never leave the developer's machine — that's the encryption boundary.
+The age identity resolves in order: `identity` in `~/.config/revvault/config.toml`, then the `REVVAULT_IDENTITY` env var, then `~/.config/age/keys.txt` (XDG location, checked first), falling back to the legacy `~/.age-identity/keys.txt`. This file should never leave the developer's machine — that's the encryption boundary.
 
 ---
 
@@ -181,11 +183,15 @@ The default behavior maps every `<vault_prefix>/<name>` to env var `NAME` for ea
 
 ## Rotation surface
 
-Per `da6ea01` (#37):
+`revvault rotate <provider>` is a fully implemented command (`crates/cli/src/commands/rotate.rs`), executed by `crates/core/src/rotation/executor.rs::execute`. It is not a stub: 26 integration tests cover it end to end (`crates/core/tests/rotation_integration.rs`).
 
-- Rotation hooks: `[rotation.<name>]` blocks in manifest define `pre-rotate` + `post-rotate` shell hooks
-- Strict verify: every rotation re-fetches the new value to confirm encryption + retrieval round-trip
-- Local generator: `revvault generate --shape <type>` produces shape-aware values (URL-safe random, alnum, digits-only, etc.)
+Config is a `[providers.<name>]` block per provider in `<store>/.revvault/rotation.toml` (`crates/core/src/rotation/config.rs`). Provider dispatch is by `settings["type"]` (`crates/core/src/rotation/providers/mod.rs::build_provider`):
+
+- `local`: cryptographically random value (`hex32` / `hex64` / `uuid`), no network (`crates/core/src/rotation/providers/local.rs`)
+- absent or unrecognized: generic HTTP create + optional revoke pattern, for providers whose auth is the value being rotated, e.g. Stripe/Vercel/GitHub tokens (`crates/core/src/rotation/providers/http.rs`)
+- `neon`: Neon Postgres password reset; the auth token is a separate vault secret at `settings["api_key_path"]` (`crates/core/src/rotation/providers/neon.rs`)
+
+Execution steps (`executor.rs::execute`): read the current key and prior key ID from the vault, build and preflight the provider, run the rotation, shape-validate the returned value (abort on mismatch, old key unchanged), write the new key (and key ID) to the vault, apply the optional post-rotation sync hook (best-effort, failures logged), run `post_rotate` shell hooks (warn-on-failure), run an optional `verify` shell command that is strict (a failing verify writes `verified: false` to the log and exits non-zero, though the new key is already in the vault by that point), then append a JSON-line log entry to `.revvault/rotation-log.jsonl`. `revvault rotate <provider> --dry-run` runs preflight and prints the plan without touching the vault or any API (`executor.rs::dry_run`). `revvault rotation-status` prints the last 10 log entries (`crates/cli/src/commands/rotate.rs::status`).
 
 Per-credential-type rotation runbook lives at [`revealui:docs/CREDENTIAL-ROTATION-RUNBOOK`](https://github.com/RevealUIStudio/revealui/blob/main/docs/CREDENTIAL-ROTATION-RUNBOOK).
 
@@ -193,7 +199,7 @@ Per-credential-type rotation runbook lives at [`revealui:docs/CREDENTIAL-ROTATIO
 
 ## Security posture
 
-- **Encryption boundary:** the age identity at `~/.age-identity/keys.txt`. Never copied to remote, never embedded in CI secrets, never logged.
+- **Encryption boundary:** the age identity, resolved from `~/.config/age/keys.txt` (XDG, checked first) or the legacy `~/.age-identity/keys.txt`. Never copied to remote, never embedded in CI secrets, never logged.
 - **Path validation:** directory traversal (`..`), null bytes, shell metacharacters rejected at the API layer in `core::path::validate`.
 - **No plaintext on disk** outside a tmpfs-backed restore directory zeroized on command exit.
 - **No logging of values** — debug logs reference paths, never decrypted bodies.
@@ -214,8 +220,8 @@ Pre-1.0 per the fleet versioning convention (RevealUI Studio internal). Cargo wo
 | **RevealUI** | Consumer — every secret in RevealUI's `.env`/CI/runbook lives in RevVault per `secrets.md` rule |
 | **RevealCoin** _(cancelled 2026-05-29)_ | Former consumer — its keypair files were destroyed when the product was cancelled; no longer a vault consumer |
 | **RevDev** | Consumer — license signing keys |
-| **RevForge** | Consumer — per-customer secrets at `forge/customers/<slug>/*` paths in vault |
-| **RevKit** | Sets up the age-identity mount path RevVault expects (`~/.age-identity/keys.txt`) |
+| **RevForge** | Consumer — per-customer secrets at `revforge/customers/<slug>/*` paths in vault |
+| **RevKit** | Sets up the age-identity mount path RevVault expects (`~/.config/age/keys.txt`, falling back to the legacy `~/.age-identity/keys.txt`) |
 | **RevCon** | Independent — RevCon manages editor configs, doesn't touch secrets |
 | **RevSkills** | Independent |
 
