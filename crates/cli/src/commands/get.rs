@@ -5,9 +5,6 @@ use clap::Args;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
-use revvault_core::Config;
-use revvault_core::PassageStore;
-
 #[derive(Args)]
 pub struct GetArgs {
     /// Secret path (e.g., "credentials/stripe/secret-key")
@@ -23,8 +20,7 @@ pub struct GetArgs {
 }
 
 pub fn run(args: GetArgs, json_output: bool) -> anyhow::Result<()> {
-    let config = Config::resolve()?;
-    let store = PassageStore::open(config)?;
+    let store = super::open_store()?;
     let secret = store.get(&args.path)?;
     let value = secret.expose_secret();
 

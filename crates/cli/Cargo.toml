@@ -25,6 +25,7 @@ reqwest = { workspace = true }
 toml = { workspace = true }
 chrono = { workspace = true }
 clap_complete = "4"
+rpassword = "7"
 tempfile = "3"
 memfd = { workspace = true }
 nix = { workspace = true }
