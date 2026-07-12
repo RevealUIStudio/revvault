@@ -224,6 +224,14 @@ impl VercelClient {
     /// silent-downgrade class this parameter closes (observed 2026-06-10:
     /// a sync apply re-created sensitive Stripe + signing secrets as
     /// UI-revealable `encrypted` rows).
+    ///
+    /// `git_branch` scopes the var to a single preview git branch (e.g.
+    /// `staging`), so it is exposed only to that branch's preview
+    /// deployments rather than every branch's previews. `None` omits the
+    /// `gitBranch` field from the body, preserving prior behavior. Vercel
+    /// only accepts `gitBranch` alongside a `targets` list that includes
+    /// `"preview"`; this is checked here and fails loudly rather than
+    /// surfacing as a confusing Vercel 400.
     pub async fn create_env_var(
         &self,
         project_id: &str,
@@ -231,14 +239,29 @@ impl VercelClient {
         value: &str,
         targets: &[String],
         var_type: EnvVarType,
+        git_branch: Option<&str>,
     ) -> anyhow::Result<()> {
+        if let Some(branch) = git_branch {
+            if !targets.iter().any(|t| t == "preview") {
+                bail!(
+                    "Cannot scope env var '{}' to git branch '{}': targets {:?} do not include \"preview\" (Vercel only accepts gitBranch alongside a preview target)",
+                    key,
+                    branch,
+                    targets
+                );
+            }
+        }
+
         let url = self.base_url(project_id);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "key": key,
             "value": value,
             "target": targets,
             "type": var_type.as_str(),
         });
+        if let Some(branch) = git_branch {
+            body["gitBranch"] = serde_json::Value::String(branch.to_string());
+        }
 
         let req = self.client.post(&url).bearer_auth(&self.token).json(&body);
         let resp = self.send_retrying(req).await?;
@@ -442,6 +465,7 @@ mod tests {
                 "postgres://...",
                 &["production".to_string()],
                 EnvVarType::Encrypted,
+                None,
             )
             .await
             .unwrap();
@@ -471,6 +495,7 @@ mod tests {
                 "sk_live_x",
                 &["production".to_string()],
                 EnvVarType::Sensitive,
+                None,
             )
             .await
             .unwrap();
@@ -499,6 +524,7 @@ mod tests {
                 "sk_live_x",
                 &["production".to_string()],
                 EnvVarType::Sensitive,
+                None,
             )
             .await
             .expect_err("400 must surface");
@@ -507,6 +533,93 @@ mod tests {
         assert!(msg.contains("400"), "got: {msg}");
 
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn create_env_var_posts_git_branch_when_scoped_to_preview() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/projects/p/env")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "key": "STAGING_SECRET",
+                "target": ["preview"],
+                "gitBranch": "staging",
+            })))
+            .with_status(201)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        client
+            .create_env_var(
+                "p",
+                "STAGING_SECRET",
+                "value",
+                &["preview".to_string()],
+                EnvVarType::Encrypted,
+                Some("staging"),
+            )
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn create_env_var_omits_git_branch_when_none() {
+        // Exact-body match (no partial matcher): asserts there is no
+        // "gitBranch" key at all when git_branch is None, not merely
+        // that the named fields are present.
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/projects/p/env")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "key": "POSTGRES_URL",
+                "value": "postgres://...",
+                "target": ["production"],
+                "type": "encrypted",
+            })))
+            .with_status(201)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        client
+            .create_env_var(
+                "p",
+                "POSTGRES_URL",
+                "postgres://...",
+                &["production".to_string()],
+                EnvVarType::Encrypted,
+                None,
+            )
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn create_env_var_rejects_git_branch_without_preview_target() {
+        let client = VercelClient::new("t".into(), None);
+        let err = client
+            .create_env_var(
+                "p",
+                "STAGING_SECRET",
+                "value",
+                &["production".to_string()],
+                EnvVarType::Encrypted,
+                Some("staging"),
+            )
+            .await
+            .expect_err(
+                "gitBranch without a preview target must be rejected before the request is sent",
+            );
+        let msg = format!("{err}");
+        assert!(msg.contains("staging"), "got: {msg}");
+        assert!(msg.contains("preview"), "got: {msg}");
     }
 
     #[tokio::test]

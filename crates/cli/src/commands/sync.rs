@@ -54,6 +54,14 @@ struct ProjectSync {
     /// Environment targets: production, preview, development
     #[serde(default = "default_targets")]
     targets: Vec<String>,
+    /// Scope every var CREATED under this project to a single preview git
+    /// branch (e.g. `"staging"`), so it is only exposed to that branch's
+    /// preview deployments rather than every branch's previews. Requires
+    /// `targets` to include `"preview"`; `create_env_var` enforces that and
+    /// fails loudly otherwise. Updates are unaffected (Vercel preserves the
+    /// existing row's `gitBranch` on PATCH, same as `target`/`type`).
+    #[serde(default)]
+    git_branch: Option<String>,
     /// Skip these env var names (integration-managed, etc.)
     #[serde(default)]
     skip: Vec<String>,
@@ -605,6 +613,7 @@ async fn push_mode(
                                 raw,
                                 &project_cfg.targets,
                                 var_type,
+                                project_cfg.git_branch.as_deref(),
                             )
                             .await?;
                         let _ = append_audit_log(
@@ -905,6 +914,7 @@ mod tests {
             project_id: "prj_test".to_string(),
             vault_prefix: "revealui/vercel/api".to_string(),
             targets: default_targets(),
+            git_branch: None,
             skip: vec![],
             vars,
         }
@@ -1222,6 +1232,7 @@ mod tests {
             project_id: "prj_p".to_string(),
             vault_prefix: "revealui/vercel/api".to_string(),
             targets: vec!["production".to_string()],
+            git_branch: None,
             skip: vec![],
             vars,
         });
@@ -1281,6 +1292,7 @@ mod tests {
             project_id: "prj_p".to_string(),
             vault_prefix: "revealui/vercel/api".to_string(),
             targets: vec!["production".to_string()],
+            git_branch: None,
             skip: vec![],
             vars,
         });
@@ -1337,6 +1349,7 @@ mod tests {
             project_id: "prj_p".to_string(),
             vault_prefix: "revealui/vercel/api".to_string(),
             targets: vec!["production".to_string()],
+            git_branch: None,
             skip: vec![],
             vars,
         });
