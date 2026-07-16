@@ -6,10 +6,18 @@ name: backflow-main-into-test
 # revfleet-backflow App installed on this repo (Contents + Pull requests r/w).
 on:
   push:
-    branches: [main]
+    branches: [main, test]
+
+# Serialize backflow runs so the two triggers (and rapid pushes) can't race on
+# the force-push / PR open-or-update.
+concurrency:
+  group: backflow-main-into-test
+  cancel-in-progress: false
 
 jobs:
   backflow:
     # Pinned to immutable SHA (resolved 2026-06-12); update via gh api repos/RevealUIStudio/.github/commits/main
     uses: RevealUIStudio/.github/.github/workflows/backflow-reusable.yml@010a9388aee91d6f6fef8fce5a18f897af42443b # main @ 2026-07-06 (backflow signed-merge — .github#7)
-    secrets: inherit
+    secrets:
+      BACKFLOW_APP_ID: ${{ secrets.BACKFLOW_APP_ID }}
+      BACKFLOW_APP_PRIVATE_KEY: ${{ secrets.BACKFLOW_APP_PRIVATE_KEY }}
