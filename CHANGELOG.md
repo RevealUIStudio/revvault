@@ -2,7 +2,7 @@
 
 All notable changes to revvault are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions; versions follow [SemVer 2.0.0](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] — 2026-07-17
 
 ### Changed
 
