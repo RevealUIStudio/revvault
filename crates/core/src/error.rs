@@ -27,6 +27,9 @@ pub enum RevvaultError {
     #[error("decryption failed: {0}")]
     DecryptionFailed(String),
 
+    #[error("decryption failed for {path}: {reason}")]
+    DecryptionFailedForPath { path: String, reason: String },
+
     #[error("invalid namespace: {0}")]
     InvalidNamespace(String),
 

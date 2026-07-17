@@ -24,6 +24,10 @@ pub fn run(args: GetArgs, json_output: bool) -> anyhow::Result<()> {
     let secret = store.get(&args.path)?;
     let value = secret.expose_secret();
 
+    if value.is_empty() {
+        eprintln!("warning: stored value is empty (path: {})", args.path);
+    }
+
     if json_output {
         println!(
             "{}",

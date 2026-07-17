@@ -48,7 +48,13 @@ impl PassageStore {
         let file_path = self.resolve_path(path)?;
         let ciphertext = std::fs::read(&file_path)
             .map_err(|_| RevvaultError::SecretNotFound(path.to_string()))?;
-        crypto::decrypt(&ciphertext, &self.identity)
+        crypto::decrypt(&ciphertext, &self.identity).map_err(|e| match e {
+            RevvaultError::DecryptionFailed(reason) => RevvaultError::DecryptionFailedForPath {
+                path: path.to_string(),
+                reason,
+            },
+            other => other,
+        })
     }
 
     /// Set (encrypt and write) a secret at the given path.
