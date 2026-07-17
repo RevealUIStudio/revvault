@@ -210,6 +210,99 @@ fn get_nonexistent_fails() {
         .failure();
 }
 
+// ---------------------------------------------------------------------------
+// get exit semantics: decrypt failures, empty values, missing paths
+// ---------------------------------------------------------------------------
+
+/// Write an age-encrypted `.age` file directly into the store, bypassing the
+/// `set` command (which rejects empty input), so tests can pin behavior for
+/// content that `set` itself can never produce: a genuinely empty secret.
+fn write_encrypted_file(
+    store: &str,
+    path: &str,
+    plaintext: &[u8],
+    recipient: &age::x25519::Recipient,
+) {
+    let ciphertext =
+        revvault_core::crypto::encrypt(plaintext, std::slice::from_ref(recipient)).unwrap();
+    let file_path = Path::new(store).join(format!("{path}.age"));
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(file_path, ciphertext).unwrap();
+}
+
+/// Parse the age identity out of the `keys.txt` written by `setup_temp_store`.
+fn read_identity(identity_path: &str) -> age::x25519::Identity {
+    let contents = std::fs::read_to_string(identity_path).unwrap();
+    let key_line = contents
+        .lines()
+        .find(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
+        .expect("identity file must contain a key line");
+    key_line.trim().parse().unwrap()
+}
+
+#[test]
+fn get_empty_value_exits_zero_with_warning_on_stderr() {
+    let (_dir, store, identity) = setup_temp_store();
+    let recipient = read_identity(&identity).to_public();
+
+    write_encrypted_file(&store, "misc/empty", b"", &recipient);
+
+    // --full prints the raw value with no added newline, so a truly empty
+    // stored value produces truly empty stdout (default mode still emits a
+    // trailing newline from `println!`, which is unrelated to this behavior).
+    revvault_cmd(&store, &identity)
+        .arg("get")
+        .arg("--full")
+        .arg("misc/empty")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "warning: stored value is empty (path: misc/empty)",
+        ));
+}
+
+#[test]
+fn get_undecryptable_value_fails_with_path_and_reason() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    // Encrypt to a different, unrelated identity so the store's own identity
+    // cannot decrypt it (simulates a wrong-identity / key-rotation blob).
+    let other_recipient = age::x25519::Identity::generate().to_public();
+    write_encrypted_file(
+        &store,
+        "misc/undecryptable",
+        b"orphaned-secret",
+        &other_recipient,
+    );
+
+    revvault_cmd(&store, &identity)
+        .arg("get")
+        .arg("misc/undecryptable")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("misc/undecryptable")
+                .and(predicate::str::contains("No matching keys found")),
+        );
+}
+
+#[test]
+fn get_missing_path_stderr_names_path() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("get")
+        .arg("no/such/secret")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("no/such/secret"));
+}
+
 #[test]
 fn set_rejects_path_traversal() {
     let (_dir, store, identity) = setup_temp_store();
