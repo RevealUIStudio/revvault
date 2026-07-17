@@ -2,6 +2,26 @@
 
 All notable changes to revvault are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions; versions follow [SemVer 2.0.0](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **`get` now fails loudly on a decrypt failure instead of returning silent
+  empty output.** A secret that cannot be decrypted (wrong age identity,
+  corrupt blob, missing private key for one of the recipients) exits non-zero
+  with an error on stderr, rather than exiting `0` with empty stdout. Callers
+  that treated empty `get` output as "no value" should check the exit code.
+- **The decrypt error now names the failing path.** Multi-secret runbook
+  output stays attributable: `decryption failed for <path>: <reason>`.
+
+### Added
+
+- **Empty-value warning.** When a stored value decrypts cleanly to zero
+  bytes, `get` now prints `warning: stored value is empty (path: <path>)` to
+  stderr. Stdout still contains no value and the exit code is still `0`, so
+  scripts that pipe `get` output are unaffected; the warning only shows up
+  when stderr is watched or captured.
+
 ## [0.3.0] — 2026-06-11
 
 ### Fixed
