@@ -1,7 +1,7 @@
 ---
 type: repo-doc-index
 repo: revvault
-updated: 2026-07-11
+updated: 2026-07-23
 ---
 
 # RevVault — Documentation Index

@@ -139,7 +139,7 @@ crates/tauri-app  — Tauri 2 desktop backend
 frontend/         — React 19 + TypeScript + Tailwind CSS v4 (Vite)
 ```
 
-Workspace at version `0.3.0` (pre-1.0 per fleet versioning).
+Workspace at version `0.4.0` (pre-1.0 per fleet versioning; see `Cargo.toml` workspace package + `CHANGELOG.md`).
 
 ## Store Format
 
