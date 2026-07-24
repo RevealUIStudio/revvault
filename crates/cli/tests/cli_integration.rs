@@ -513,7 +513,9 @@ fn export_env_public_only_allows_public_key() {
         .arg("revealui/env/license")
         .assert()
         .success()
-        .stdout(predicate::str::contains("export REVEALUI_LICENSE_PUBLIC_KEY="));
+        .stdout(predicate::str::contains(
+            "export REVEALUI_LICENSE_PUBLIC_KEY=",
+        ));
 }
 
 #[test]

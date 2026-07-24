@@ -19,4 +19,7 @@ the gitleaks gate honest everywhere else.
 """
 paths = [
   '''crates/core/src/sync/shape\.rs''',
+  # GAP-260 P2-2: export-env --public-only tests need a private-key-shaped fixture
+  # to prove refusal. Dummy PEM only (truncated MC4CAQA… block, not a real key).
+  '''crates/cli/tests/cli_integration\.rs''',
 ]
