@@ -95,4 +95,162 @@ mod tests {
         let decrypted = decrypt(&ciphertext, &identity).unwrap();
         assert_eq!(decrypted.expose_secret(), "sk_live_test_secret_key_12345");
     }
+
+    #[test]
+    fn decrypt_with_wrong_identity_fails() {
+        let owner = x25519::Identity::generate();
+        let recipient = owner.to_public();
+        let intruder = Identity::from_generated(vec![x25519::Identity::generate()]);
+
+        let ciphertext = encrypt(b"top secret", &[recipient]).unwrap();
+
+        let result = decrypt(&ciphertext, &intruder);
+        assert!(matches!(result, Err(RevvaultError::DecryptionFailed(_))));
+    }
+
+    #[test]
+    fn decrypt_tampered_ciphertext_start_fails() {
+        let id = x25519::Identity::generate();
+        let recipient = id.to_public();
+        let identity = Identity::from_generated(vec![id]);
+
+        let mut ciphertext = encrypt(b"tamper me", &[recipient]).unwrap();
+        ciphertext[0] ^= 0xFF;
+
+        let result = decrypt(&ciphertext, &identity);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_tampered_ciphertext_middle_fails() {
+        let id = x25519::Identity::generate();
+        let recipient = id.to_public();
+        let identity = Identity::from_generated(vec![id]);
+
+        let mut ciphertext = encrypt(b"tamper me in the middle please", &[recipient]).unwrap();
+        let mid = ciphertext.len() / 2;
+        ciphertext[mid] ^= 0xFF;
+
+        let result = decrypt(&ciphertext, &identity);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_tampered_ciphertext_end_fails() {
+        let id = x25519::Identity::generate();
+        let recipient = id.to_public();
+        let identity = Identity::from_generated(vec![id]);
+
+        let mut ciphertext = encrypt(b"tamper me at the end", &[recipient]).unwrap();
+        let last = ciphertext.len() - 1;
+        ciphertext[last] ^= 0xFF;
+
+        let result = decrypt(&ciphertext, &identity);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_truncated_ciphertext_fails() {
+        let id = x25519::Identity::generate();
+        let recipient = id.to_public();
+        let identity = Identity::from_generated(vec![id]);
+
+        let ciphertext = encrypt(b"truncate me", &[recipient]).unwrap();
+        let truncated = &ciphertext[..ciphertext.len() / 2];
+
+        let result = decrypt(truncated, &identity);
+        assert!(matches!(result, Err(RevvaultError::DecryptionFailed(_))));
+    }
+
+    #[test]
+    fn decrypt_empty_input_fails() {
+        let id = x25519::Identity::generate();
+        let identity = Identity::from_generated(vec![id]);
+
+        let result = decrypt(&[], &identity);
+        assert!(matches!(result, Err(RevvaultError::DecryptionFailed(_))));
+    }
+
+    #[test]
+    fn decrypt_garbage_non_age_input_fails() {
+        let id = x25519::Identity::generate();
+        let identity = Identity::from_generated(vec![id]);
+
+        let garbage = b"this is not an age file at all, just plain text bytes";
+        let result = decrypt(garbage, &identity);
+        assert!(matches!(result, Err(RevvaultError::DecryptionFailed(_))));
+    }
+
+    #[test]
+    fn empty_plaintext_round_trips() {
+        let id = x25519::Identity::generate();
+        let recipient = id.to_public();
+        let identity = Identity::from_generated(vec![id]);
+
+        let ciphertext = encrypt(b"", &[recipient]).unwrap();
+        let decrypted = decrypt(&ciphertext, &identity).unwrap();
+        assert_eq!(decrypted.expose_secret(), "");
+    }
+
+    #[test]
+    fn multi_recipient_encrypt_decrypt_by_either_recipient() {
+        let id_a = x25519::Identity::generate();
+        let id_b = x25519::Identity::generate();
+        let recipients = vec![id_a.to_public(), id_b.to_public()];
+
+        let ciphertext = encrypt(b"shared secret", &recipients).unwrap();
+
+        let identity_a = Identity::from_generated(vec![id_a]);
+        let decrypted_a = decrypt(&ciphertext, &identity_a).unwrap();
+        assert_eq!(decrypted_a.expose_secret(), "shared secret");
+
+        let identity_b = Identity::from_generated(vec![id_b]);
+        let decrypted_b = decrypt(&ciphertext, &identity_b).unwrap();
+        assert_eq!(decrypted_b.expose_secret(), "shared secret");
+    }
+
+    #[test]
+    fn multi_recipient_excluded_identity_fails() {
+        let id_a = x25519::Identity::generate();
+        let id_b = x25519::Identity::generate();
+        let outsider = x25519::Identity::generate();
+        let recipients = vec![id_a.to_public(), id_b.to_public()];
+
+        let ciphertext = encrypt(b"shared secret", &recipients).unwrap();
+
+        let outsider_identity = Identity::from_generated(vec![outsider]);
+        let result = decrypt(&ciphertext, &outsider_identity);
+        assert!(matches!(result, Err(RevvaultError::DecryptionFailed(_))));
+    }
+
+    #[test]
+    fn load_recipients_missing_file_fails() {
+        let result = load_recipients(std::path::Path::new("/nonexistent/path/.age-recipients"));
+        assert!(matches!(result, Err(RevvaultError::RecipientsNotFound(_))));
+    }
+
+    #[test]
+    fn load_recipients_empty_file_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".age-recipients");
+        std::fs::write(&path, "# just a comment\n\n").unwrap();
+
+        let result = load_recipients(&path);
+        assert!(matches!(result, Err(RevvaultError::RecipientsNotFound(_))));
+    }
+
+    #[test]
+    fn load_recipients_malformed_lines_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".age-recipients");
+        let id = x25519::Identity::generate();
+        std::fs::write(
+            &path,
+            format!("not-a-valid-recipient\n{}\n", id.to_public()),
+        )
+        .unwrap();
+
+        let recipients = load_recipients(&path).unwrap();
+        assert_eq!(recipients.len(), 1);
+    }
 }
