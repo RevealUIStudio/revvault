@@ -496,6 +496,50 @@ fn export_env_nonexistent_fails() {
         .failure();
 }
 
+#[test]
+fn export_env_public_only_allows_public_key() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("revealui/env/license")
+        .write_stdin("REVEALUI_LICENSE_PUBLIC_KEY=-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAtest\n-----END PUBLIC KEY-----")
+        .assert()
+        .success();
+
+    revvault_cmd(&store, &identity)
+        .arg("export-env")
+        .arg("--public-only")
+        .arg("revealui/env/license")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "export REVEALUI_LICENSE_PUBLIC_KEY=",
+        ));
+}
+
+#[test]
+fn export_env_public_only_refuses_private_key() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("revealui/env/license")
+        .write_stdin(
+            "REVEALUI_LICENSE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIA\n-----END PRIVATE KEY-----\nREVEALUI_LICENSE_PUBLIC_KEY=-----BEGIN PUBLIC KEY-----\nMCow\n-----END PUBLIC KEY-----",
+        )
+        .assert()
+        .success();
+
+    revvault_cmd(&store, &identity)
+        .arg("export-env")
+        .arg("--public-only")
+        .arg("revealui/env/license")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("public-only refused private-key"));
+}
+
 // ---------------------------------------------------------------------------
 // list with flags
 // ---------------------------------------------------------------------------

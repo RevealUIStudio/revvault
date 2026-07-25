@@ -1,15 +1,15 @@
 ---
 type: master-spec
 repo: revvault
-last-updated: 2026-07-11
+last-updated: 2026-07-23
 owner: RevealUI Studio
 staleness-status: FRESH
 ---
 
 # RevVault — Master Spec
 
-**Last Updated:** 2026-07-11
-**Status:** Pre-1.0 — production-grade for studio internal use; surface area stable
+**Last Updated:** 2026-07-23  
+**Status:** Pre-1.0 — production-grade for studio internal use; workspace **0.4.0**  
 **Repo:** [RevealUIStudio/revvault](https://github.com/RevealUIStudio/revvault)
 
 > Surface area, architecture, contracts. Companion to [`MASTER_PLAN.md`](./MASTER_PLAN.md) (status + roadmap).
@@ -31,7 +31,7 @@ revvault/
 ├── Cargo.toml                # workspace root
 ├── crates/
 │   ├── core/                 # vault primitives — age encryption, path validation, namespace logic
-│   ├── cli/                  # binary `revvault` — get/set/list/search/delete/edit/export-env/generate/sync
+│   ├── cli/                  # binary `revvault` — get/set/list/search/delete/edit/export-env/generate/sync/doctor/rotate
 │   └── tauri-app/            # Tauri 2 backend (Rust commands) for the desktop UI
 ├── frontend/                 # React 19 desktop UI (consumes tauri-app commands)
 ├── scripts/                  # support scripts (test fixtures, dev helpers)
@@ -220,7 +220,7 @@ Pre-1.0 per the fleet versioning convention (RevealUI Studio internal). Cargo wo
 | **RevealUI** | Consumer — every secret in RevealUI's `.env`/CI/runbook lives in RevVault per `secrets.md` rule |
 | **RevealCoin** _(cancelled 2026-05-29)_ | Former consumer — its keypair files were destroyed when the product was cancelled; no longer a vault consumer |
 | **RevDev** | Consumer — license signing keys |
-| **RevForge** | Consumer — per-customer secrets at `revforge/customers/<slug>/*` paths in vault |
+| **RevForge** | Consumer — per-customer secrets at live path prefix `forge/customers/<slug>/*` (legacy `forge/` prefix in stamped kits) |
 | **RevKit** | Sets up the age-identity mount path RevVault expects (`~/.config/age/keys.txt`, falling back to the legacy `~/.age-identity/keys.txt`) |
 | **RevCon** | Independent — RevCon manages editor configs, doesn't touch secrets |
 | **RevSkills** | Independent |

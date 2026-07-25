@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/tauri.conf.json",
   "productName": "Revvault",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "identifier": "dev.revealui.revvault",
   "build": {
     "frontendDist": "../../frontend/dist",
