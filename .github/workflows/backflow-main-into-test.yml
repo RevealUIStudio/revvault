@@ -17,7 +17,7 @@ concurrency:
 jobs:
   backflow:
     # Pinned to immutable SHA (resolved 2026-06-12); update via gh api repos/RevealUIStudio/.github/commits/main
-    uses: RevealUIStudio/.github/.github/workflows/backflow-reusable.yml@010a9388aee91d6f6fef8fce5a18f897af42443b # main @ 2026-07-06 (backflow signed-merge — .github#7)
+    uses: RevealUIStudio/.github/.github/workflows/backflow-reusable.yml@e895ec57294c24089e3a0c7238d6c34ebb5fdf95 # main @ 2026-07-25 (backflow applies backflow:merge-commit label — .github#12)
     secrets:
       BACKFLOW_APP_ID: ${{ secrets.BACKFLOW_APP_ID }}
       BACKFLOW_APP_PRIVATE_KEY: ${{ secrets.BACKFLOW_APP_PRIVATE_KEY }}
