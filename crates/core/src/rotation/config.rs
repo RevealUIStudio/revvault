@@ -54,6 +54,13 @@ pub struct ProviderConfig {
     /// historical best-effort sync for non-crown providers.
     #[serde(default)]
     pub sync_must_succeed: bool,
+    /// When `true` (GAP-261 dual-slot residual), `rotate` writes the new
+    /// material to `{secret_path}-next` (and companion `-next` paths) and
+    /// copies the outgoing live value to `-previous` **without** overwriting
+    /// the live leaf. Operators flip with `revvault rotation promote`.
+    /// Default `false` keeps in-place rotation for non-crown providers.
+    #[serde(default)]
+    pub dual_slot: bool,
     /// Optional expected output shape of the rotated value. When set,
     /// the executor validates the fresh rotation outcome against this
     /// shape **before** writing it to the vault. A mismatch aborts the

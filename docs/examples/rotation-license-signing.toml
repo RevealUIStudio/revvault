@@ -1,0 +1,32 @@
+# Example crown-jewel rotation.toml block for the license signing keypair
+# (GAP-261 residual). Copy into `<store>/.revvault/rotation.toml` — do NOT
+# commit live store config. Operator-gated: dual-slot rotate never overwrites
+# the live leaf; promote flips next → live after verify soak.
+#
+#   revvault rotate license-signing --dry-run
+#   revvault rotate license-signing
+#   # soak: NEXT kid verifies in prod (GAP-259 multi-key) + remote readback
+#   revvault rotation-promote license-signing
+#
+# Customer re-mint (forge/customers/*/license-key) is NOT performed by promote.
+# Keep post_rotate pointing at the existing revforge script until a later
+# promote-subsume PR lands, or run it manually after promote.
+
+[providers.license-signing]
+secret_path = "revdev/license-signing-private-key"
+# dual_slot = true  → rotate writes *-next / *-previous only
+dual_slot = true
+require_verify = true
+sync_must_succeed = true
+output_shape = "pem-private-key"
+
+# Strict post-rotate gate (operator-defined). Example: export next public key
+# and assert computeKeyId matches the kid stored at *-next-id.
+verify = "test -n \"$(revvault get revdev/license-signing-private-key-next-id 2>/dev/null)\""
+
+[providers.license-signing.settings]
+type = "ed25519-keypair"
+public_key_path = "revdev/license-signing-public-key"
+# Four-path parity with revforge/scripts/rotate-forge-signing-key.sh (legacy leaves)
+legacy_private_paths = "revdev/license-signing-key"
+legacy_public_paths = "revdev/license-public-key"

@@ -24,6 +24,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use crate::rotation::config::ProviderConfig;
 use crate::rotation::provider::RotationLogEntry;
 use crate::rotation::providers::build_provider;
+use crate::rotation::slots;
 use crate::rotation::sync_hook::{self, SyncLogEntry};
 use crate::store::PassageStore;
 use crate::sync::shape::{self, Shape};
@@ -105,32 +106,52 @@ pub async fn execute(
         }
     }
 
-    // 5b. Write new key
-    store
-        .upsert(
+    // 5b/5c. Write new key (+ companions). Dual-slot: next/previous only; live untouched.
+    let write_path = if provider_config.dual_slot {
+        let next = slots::write_dual_slot_primary(
+            store,
             &provider_config.secret_path,
-            outcome.new_value.expose_secret().as_bytes(),
-        )
-        .map_err(|e| anyhow::anyhow!("cannot write new key to vault: {e}"))?;
-
-    // 5c. Companion writes (e.g. SPKI public PEM for ed25519-keypair).
-    for (path, value) in &outcome.companion_writes {
+            &outcome.new_value,
+        )?;
+        for (path, value) in &outcome.companion_writes {
+            slots::write_dual_slot_companion(store, path, value)?;
+        }
+        eprintln!(
+            "  dual_slot: wrote next at '{next}' (live '{}' unchanged — promote to flip)",
+            provider_config.secret_path
+        );
+        next
+    } else {
         store
-            .upsert(path, value.expose_secret().as_bytes())
-            .map_err(|e| anyhow::anyhow!("cannot write companion path '{path}': {e}"))?;
-    }
+            .upsert(
+                &provider_config.secret_path,
+                outcome.new_value.expose_secret().as_bytes(),
+            )
+            .map_err(|e| anyhow::anyhow!("cannot write new key to vault: {e}"))?;
+        for (path, value) in &outcome.companion_writes {
+            store
+                .upsert(path, value.expose_secret().as_bytes())
+                .map_err(|e| anyhow::anyhow!("cannot write companion path '{path}': {e}"))?;
+        }
+        provider_config.secret_path.clone()
+    };
 
-    // 6. Write new key ID (enables revocation in the next rotation)
+    // 6. Write new key ID (enables revocation in the next rotation).
+    // Dual-slot: `{secret_path}-next-id` so promote can flip it with the leaf.
     if let Some(ref id) = outcome.new_key_id {
+        let kid_write = if provider_config.dual_slot {
+            key_id_path(&slots::next_path(&provider_config.secret_path))
+        } else {
+            id_path.clone()
+        };
         store
-            .upsert(&id_path, id.as_bytes())
+            .upsert(&kid_write, id.as_bytes())
             .map_err(|e| anyhow::anyhow!("cannot write key ID to vault: {e}"))?;
     }
-
     // 7. Post-rotation sync hook. The vault is already on the
-    // new value at this point; sync is best-effort by default and
-    // infallible at the function level (failures land as log entries).
-    // When `sync_must_succeed` is set (crown jewels, GAP-261), any
+    // new value at this point (live or dual-slot next); sync is best-effort
+    // by default and infallible at the function level (failures land as log
+    // entries). When `sync_must_succeed` is set (crown jewels, GAP-261), any
     // non-success row aborts the rotation with Err so operators never
     // silently run with vault/remote drift.
     let sync_log: Option<Vec<SyncLogEntry>> = if let Some(sync_cfg) = &provider_config.sync {
@@ -267,14 +288,86 @@ pub async fn execute(
         verified,
     )?;
 
-    eprintln!(
-        "✓ Rotated '{}' for provider '{}'",
-        provider_config.secret_path, provider_name
-    );
+    if provider_config.dual_slot {
+        eprintln!(
+            "✓ Dual-slot rotated provider '{provider_name}' → next at '{write_path}' \
+             (live '{}' still current until `revvault rotation promote`)",
+            provider_config.secret_path
+        );
+    } else {
+        eprintln!(
+            "✓ Rotated '{}' for provider '{}'",
+            provider_config.secret_path, provider_name
+        );
+    }
     if outcome.new_key_id.is_some() {
-        eprintln!("  Key ID stored at '{}' for next rotation", id_path);
+        let kid_at = if provider_config.dual_slot {
+            key_id_path(&slots::next_path(&provider_config.secret_path))
+        } else {
+            id_path.clone()
+        };
+        eprintln!("  Key ID stored at '{kid_at}' for next rotation");
     }
 
+    Ok(())
+}
+
+/// Promote dual-slot next → live for one provider (GAP-261 residual).
+///
+/// Requires a prior dual-slot `rotate` that left `{secret_path}-next`.
+/// Optionally mirrors the promoted private/public values onto legacy vault
+/// paths from settings:
+/// - `legacy_private_paths` — comma-separated (e.g. `revdev/license-signing-key`)
+/// - `legacy_public_paths` — comma-separated (e.g. `revdev/license-public-key`)
+///
+/// Customer re-mint (`forge/customers/*/license-key`) stays a `post_rotate`
+/// hook (or the existing revforge script) until a later promote subsume PR.
+pub fn promote(
+    store: &PassageStore,
+    provider_name: &str,
+    provider_config: &ProviderConfig,
+) -> anyhow::Result<()> {
+    if !provider_config.dual_slot {
+        return Err(anyhow::anyhow!(
+            "provider '{provider_name}': promote requires dual_slot=true in rotation.toml"
+        ));
+    }
+
+    let promoted = slots::promote_leaf(store, &provider_config.secret_path)?;
+    eprintln!("  promoted '{}' ← next", provider_config.secret_path);
+
+    // Promote companion public path if configured.
+    if let Some(pub_path) = provider_config.settings.get("public_key_path") {
+        let pub_promoted = slots::promote_leaf(store, pub_path)?;
+        eprintln!("  promoted '{pub_path}' ← next");
+        let legacy_pub =
+            slots::parse_path_list(provider_config.settings.get("legacy_public_paths"));
+        slots::mirror_live_to_paths(store, &pub_promoted, &legacy_pub)?;
+    }
+
+    let legacy_priv = slots::parse_path_list(provider_config.settings.get("legacy_private_paths"));
+    slots::mirror_live_to_paths(store, &promoted, &legacy_priv)?;
+
+    // Promote next-id leaf (`{secret}-next-id`) → live-id (`{secret}-id`).
+    let id_path = key_id_path(&provider_config.secret_path);
+    let next_id = key_id_path(&slots::next_path(&provider_config.secret_path));
+    if let Ok(kid) = store.get(&next_id) {
+        store
+            .upsert(&id_path, kid.expose_secret().as_bytes())
+            .map_err(|e| anyhow::anyhow!("cannot promote key id to '{id_path}': {e}"))?;
+        let _ = store.delete(&next_id);
+    }
+
+    append_log(
+        store,
+        provider_name,
+        &provider_config.secret_path,
+        &None,
+        None,
+        None,
+    )?;
+
+    eprintln!("✓ Promoted dual-slot provider '{provider_name}' to live paths");
     Ok(())
 }
 

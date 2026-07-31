@@ -29,6 +29,7 @@ pub mod config;
 pub mod executor;
 pub mod provider;
 pub mod providers;
+pub mod slots;
 pub mod sync_hook;
 
 pub use config::RotationConfig;
