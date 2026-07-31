@@ -19,6 +19,17 @@ env:
   NODE_VERSION: "24"
 
 jobs:
+  # GAP-372: materialized .claude rules must match .revcon-manifest.json
+  copy-lockstep:
+    name: Copy lockstep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify copy-mode lockstep
+        run: bash scripts/verify-copy-lockstep.sh --target "$GITHUB_WORKSPACE"
+
   test:
     # NOTE: job name preserved as "Test (core + cli)" to match the required
     # status check registered with branch protection. To rename safely,
