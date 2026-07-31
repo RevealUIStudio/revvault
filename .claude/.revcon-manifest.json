@@ -25,7 +25,7 @@
     },
     "rules/git.md": {
       "source": "profiles/revfleet/claude/rules/git.md",
-      "sha256": "59fdde78476f102a1b65f88ec4a874471f5178e6ee9c1cdbe68f53f532221694"
+      "sha256": "a8c582428a148f5c3d8f07a96256b157606a5244d2e9d8e3d2ae81aef230dbd3"
     },
     "rules/model-allocation.md": {
       "source": "profiles/revfleet/claude/rules/model-allocation.md",
@@ -41,7 +41,7 @@
     },
     "rules/planning.md": {
       "source": "profiles/revfleet/claude/rules/planning.md",
-      "sha256": "731ed2f7a2df810224a6436bfefae96972d869fbb64a54e1055e3ebf6726d769"
+      "sha256": "b489fbf16bb2513d37a540474653ab70fe45f7fe704d69d7306dfde3128fd7fd"
     },
     "rules/secrets.md": {
       "source": "profiles/revfleet/claude/rules/secrets.md",
