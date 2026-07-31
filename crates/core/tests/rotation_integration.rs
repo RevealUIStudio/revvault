@@ -398,6 +398,8 @@ async fn executor_writes_new_key_to_vault_and_logs() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -463,6 +465,8 @@ async fn executor_uses_stored_key_id_for_revocation() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -489,6 +493,8 @@ async fn executor_local_hex32_writes_64_hex_chars_to_vault() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -515,6 +521,8 @@ async fn executor_local_hex64_writes_128_hex_chars_to_vault() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -538,6 +546,8 @@ async fn executor_local_uuid_writes_uuid_v4_to_vault() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -565,6 +575,8 @@ async fn local_factory_rejects_missing_generator_type() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -587,6 +599,8 @@ async fn local_factory_rejects_unknown_generator_type() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -624,6 +638,8 @@ async fn executor_runs_post_rotate_hooks_in_order() {
             format!("touch '{marker_b_sh}'"),
         ],
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -645,6 +661,8 @@ async fn executor_post_rotate_failure_does_not_abort_rotation() {
         sync: None,
         post_rotate: vec!["false".into()], // exits 1
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -676,6 +694,8 @@ async fn executor_verify_success_logs_verified_true() {
         sync: None,
         post_rotate: vec![],
         verify: Some("true".into()), // exits 0
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -698,6 +718,8 @@ async fn executor_no_verify_omits_verified_field_in_log() {
         sync: None,
         post_rotate: vec![],
         verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -725,6 +747,8 @@ async fn executor_verify_failure_returns_err_and_logs_verified_false() {
         sync: None,
         post_rotate: vec![],
         verify: Some("false".into()), // exits 1
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -768,6 +792,8 @@ async fn executor_verify_failure_with_post_rotate_still_runs_post_rotate() {
         sync: None,
         post_rotate: vec![format!("touch '{marker_sh}'")],
         verify: Some("false".into()), // exits 1 — strict failure
+        require_verify: false,
+        sync_must_succeed: false,
         output_shape: None,
     };
 
@@ -781,4 +807,90 @@ async fn executor_verify_failure_with_post_rotate_still_runs_post_rotate() {
         marker.exists(),
         "post_rotate (step 8) runs before verify (step 9), so marker should exist even when verify fails"
     );
+}
+
+// ---------------------------------------------------------------------------
+// GAP-261: ed25519-keypair provider + require_verify
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ed25519_keypair_writes_private_public_and_kid() {
+    let (_dir, store) = setup_store();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "revdev/license-signing-private-key".into(),
+        settings: settings(&[
+            ("type", "ed25519-keypair"),
+            ("public_key_path", "revdev/license-signing-public-key"),
+        ]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
+        output_shape: Some(revvault_core::sync::shape::Shape::PemPrivateKey),
+    };
+
+    executor::execute(&store, "license-signing", &provider_config)
+        .await
+        .unwrap();
+
+    let private = store.get("revdev/license-signing-private-key").unwrap();
+    let public = store.get("revdev/license-signing-public-key").unwrap();
+    let kid = store.get("revdev/license-signing-private-key-id").unwrap();
+
+    // Header markers split so gitleaks does not treat the test as a PEM leak.
+    let pkcs8_hdr = concat!("-----BEGIN ", "PRIVATE KEY-----");
+    let spki_hdr = concat!("-----BEGIN ", "PUBLIC KEY-----");
+    assert!(private.expose_secret().starts_with(pkcs8_hdr));
+    assert!(public.expose_secret().starts_with(spki_hdr));
+    assert_eq!(
+        kid.expose_secret(),
+        revvault_core::rotation::providers::keypair::compute_key_id(public.expose_secret())
+    );
+}
+
+#[test]
+fn require_verify_without_verify_command_fails_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join("store");
+    std::fs::create_dir_all(store_dir.join(".revvault")).unwrap();
+    std::fs::write(
+        store_dir.join(".revvault/rotation.toml"),
+        r#"
+[providers.crown]
+secret_path = "revdev/license-signing-private-key"
+require_verify = true
+settings = { type = "ed25519-keypair" }
+"#,
+    )
+    .unwrap();
+
+    let err = revvault_core::rotation::RotationConfig::load(&store_dir).unwrap_err();
+    assert!(
+        err.to_string().contains("require_verify=true"),
+        "unexpected: {err}"
+    );
+}
+
+#[test]
+fn require_verify_with_verify_command_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join("store");
+    std::fs::create_dir_all(store_dir.join(".revvault")).unwrap();
+    std::fs::write(
+        store_dir.join(".revvault/rotation.toml"),
+        r#"
+[providers.crown]
+secret_path = "revdev/license-signing-private-key"
+require_verify = true
+verify = "true"
+settings = { type = "ed25519-keypair" }
+"#,
+    )
+    .unwrap();
+
+    let cfg = revvault_core::rotation::RotationConfig::load(&store_dir).unwrap();
+    assert!(cfg.providers["crown"].require_verify);
+    assert_eq!(cfg.providers["crown"].verify.as_deref(), Some("true"));
 }

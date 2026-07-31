@@ -308,9 +308,6 @@ impl RotationProvider for GenericHttpProvider {
             }
         }
 
-        Ok(RotationOutcome {
-            new_value,
-            new_key_id,
-        })
+        Ok(RotationOutcome::single(new_value, new_key_id))
     }
 }

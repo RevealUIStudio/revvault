@@ -53,12 +53,13 @@ pub async fn execute(
     provider_config: &ProviderConfig,
 ) -> anyhow::Result<()> {
     let id_path = key_id_path(&provider_config.secret_path);
-    let is_local = provider_config.settings.get("type").map(String::as_str) == Some("local");
+    let provider_type = provider_config.settings.get("type").map(String::as_str);
+    // Generators that do not depend on prior vault state (first rotation
+    // must succeed when the leaf is empty).
+    let skips_current_key = matches!(provider_type, Some("local") | Some("ed25519-keypair"));
 
-    // 1-2. Read current key + previous key ID (skipped for `type=local`,
-    //      whose generator doesn't depend on prior state — first-rotation
-    //      cases would otherwise fail when the path is empty).
-    let (current_key_for_provider, old_key_id) = if is_local {
+    // 1-2. Read current key + previous key ID (skipped for generators above).
+    let (current_key_for_provider, old_key_id) = if skips_current_key {
         (SecretString::from(String::new()), None)
     } else {
         let current = store
@@ -112,6 +113,13 @@ pub async fn execute(
         )
         .map_err(|e| anyhow::anyhow!("cannot write new key to vault: {e}"))?;
 
+    // 5c. Companion writes (e.g. SPKI public PEM for ed25519-keypair).
+    for (path, value) in &outcome.companion_writes {
+        store
+            .upsert(path, value.expose_secret().as_bytes())
+            .map_err(|e| anyhow::anyhow!("cannot write companion path '{path}': {e}"))?;
+    }
+
     // 6. Write new key ID (enables revocation in the next rotation)
     if let Some(ref id) = outcome.new_key_id {
         store
@@ -120,10 +128,11 @@ pub async fn execute(
     }
 
     // 7. Post-rotation sync hook. The vault is already on the
-    // new value at this point; sync is best-effort and infallible
-    // at the function level (failures land as log entries). We
-    // surface partial failures to stderr so the operator knows to
-    // run `revvault sync vercel --apply` to retry.
+    // new value at this point; sync is best-effort by default and
+    // infallible at the function level (failures land as log entries).
+    // When `sync_must_succeed` is set (crown jewels, GAP-261), any
+    // non-success row aborts the rotation with Err so operators never
+    // silently run with vault/remote drift.
     let sync_log: Option<Vec<SyncLogEntry>> = if let Some(sync_cfg) = &provider_config.sync {
         let entries =
             sync_hook::apply_sync_after_rotation(store, sync_cfg, &outcome.new_value).await;
@@ -138,9 +147,26 @@ pub async fn execute(
                 );
             }
         }
-        if entries.iter().any(|r| r.status != "success") {
+        let any_failed = entries.iter().any(|r| r.status != "success");
+        if any_failed {
             eprintln!("  Vault is correct but at least one sync target lagged. Retry with:");
             eprintln!("    revvault sync vercel --apply --manifest <path>");
+            if provider_config.sync_must_succeed {
+                // Still record the partial sync in the log before failing.
+                append_log(
+                    store,
+                    provider_name,
+                    &provider_config.secret_path,
+                    &outcome.new_key_id,
+                    Some(entries.clone()),
+                    None,
+                )?;
+                return Err(anyhow::anyhow!(
+                    "provider '{provider_name}': sync_must_succeed=true and at least one \
+                     sync target failed — rotation aborted after vault write (retry sync, \
+                     then re-run verify)"
+                ));
+            }
         }
         Some(entries)
     } else {

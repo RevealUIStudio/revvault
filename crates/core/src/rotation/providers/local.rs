@@ -87,10 +87,7 @@ impl RotationProvider for LocalGeneratorProvider {
 
     async fn rotate(&self) -> Result<RotationOutcome> {
         let value = self.generator_type.generate();
-        Ok(RotationOutcome {
-            new_value: SecretString::from(value),
-            new_key_id: None,
-        })
+        Ok(RotationOutcome::single(SecretString::from(value), None))
     }
 
     async fn dry_run(&self) -> Result<String> {
