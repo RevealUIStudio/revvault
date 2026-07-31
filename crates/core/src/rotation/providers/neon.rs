@@ -280,14 +280,14 @@ impl RotationProvider for NeonProvider {
             .and_then(Value::as_str)
             .ok_or_else(|| self.rotation_failed("connection_uri response missing 'uri' field"))?;
 
-        Ok(RotationOutcome {
-            new_value: SecretString::from(uri.to_string()),
-            // Neon doesn't expose a stable rotation-id concept — the
-            // connection URI itself is the only identifier, and it changes
-            // on every rotation. Leave new_key_id as None; the executor
-            // skips writing the `-id` companion path when it's absent.
-            new_key_id: None,
-        })
+        // Neon doesn't expose a stable rotation-id concept — the
+        // connection URI itself is the only identifier, and it changes
+        // on every rotation. Leave new_key_id as None; the executor
+        // skips writing the `-id` companion path when it's absent.
+        Ok(RotationOutcome::single(
+            SecretString::from(uri.to_string()),
+            None,
+        ))
     }
 }
 

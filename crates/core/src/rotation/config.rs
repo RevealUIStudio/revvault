@@ -44,6 +44,16 @@ pub struct ProviderConfig {
     /// landed.
     #[serde(default)]
     pub verify: Option<String>,
+    /// When `true`, a `verify` command **must** be configured
+    /// (GAP-261). Crown jewels never rotate without a post-rotation
+    /// readback. Default `false` keeps non-crown providers optional.
+    #[serde(default)]
+    pub require_verify: bool,
+    /// When `true`, any failed post-rotation sync target makes the
+    /// executor return `Err` (GAP-261). Default `false` keeps the
+    /// historical best-effort sync for non-crown providers.
+    #[serde(default)]
+    pub sync_must_succeed: bool,
     /// Optional expected output shape of the rotated value. When set,
     /// the executor validates the fresh rotation outcome against this
     /// shape **before** writing it to the vault. A mismatch aborts the
@@ -63,6 +73,19 @@ pub struct ProviderConfig {
     pub output_shape: Option<Shape>,
 }
 
+impl ProviderConfig {
+    /// Fail-closed crown-jewel checks (GAP-261 §3.2): `require_verify`
+    /// without a `verify` command is a hard config error.
+    pub fn validate(&self, name: &str) -> Result<()> {
+        if self.require_verify && self.verify.is_none() {
+            return Err(RevvaultError::Other(anyhow::anyhow!(
+                "provider '{name}': require_verify=true but no verify command configured"
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl RotationConfig {
     /// Load rotation config from the store's `.revvault/rotation.toml`.
     pub fn load(store_dir: &Path) -> Result<Self> {
@@ -75,7 +98,11 @@ impl RotationConfig {
         }
 
         let contents = std::fs::read_to_string(&config_path)?;
-        toml::from_str(&contents)
-            .map_err(|e| RevvaultError::Other(anyhow::anyhow!("invalid rotation.toml: {e}")))
+        let config: Self = toml::from_str(&contents)
+            .map_err(|e| RevvaultError::Other(anyhow::anyhow!("invalid rotation.toml: {e}")))?;
+        for (name, provider) in &config.providers {
+            provider.validate(name)?;
+        }
+        Ok(config)
     }
 }

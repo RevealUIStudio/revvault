@@ -12,12 +12,16 @@
 //!   auth token is a separate vault secret read from `api_key_path`).
 //! - `type = "local"` → [`LocalGeneratorProvider`] (cryptographically
 //!   random value via `generator_type = hex32 | hex64 | uuid`; no network).
+//! - `type = "ed25519-keypair"` → [`Ed25519KeypairProvider`] (PKCS#8 + SPKI
+//!   PEMs; optional `public_key_path` companion write; GAP-261 P0-6).
 
 pub mod http;
+pub mod keypair;
 pub mod local;
 pub mod neon;
 
 pub use http::GenericHttpProvider;
+pub use keypair::Ed25519KeypairProvider;
 pub use local::LocalGeneratorProvider;
 pub use neon::NeonProvider;
 
@@ -40,6 +44,9 @@ use crate::store::PassageStore;
 ///   `settings["generator_type"]` (one of `hex32` / `hex64` / `uuid`).
 ///   `current_key` and `old_key_id` are unused — local secrets have no
 ///   external lifecycle to track.
+/// - `"ed25519-keypair"` — constructs an [`Ed25519KeypairProvider`].
+///   Optional `settings["public_key_path"]` companion-writes the SPKI PEM.
+///   `current_key` / `old_key_id` are unused (generator is stateless).
 /// - anything else (or absent) — constructs a `GenericHttpProvider` using
 ///   `current_key` as the auth token and the existing create/revoke URL
 ///   pattern.
@@ -84,6 +91,9 @@ pub fn build_provider(
             })?;
             Ok(Box::new(LocalGeneratorProvider::new(name, gen_type)?))
         }
+        Some("ed25519-keypair") => Ok(Box::new(Ed25519KeypairProvider::from_config(
+            name, settings,
+        ))),
         _ => Ok(Box::new(GenericHttpProvider::from_config(
             name,
             current_key,
