@@ -400,6 +400,7 @@ async fn executor_writes_new_key_to_vault_and_logs() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -467,6 +468,7 @@ async fn executor_uses_stored_key_id_for_revocation() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -495,6 +497,7 @@ async fn executor_local_hex32_writes_64_hex_chars_to_vault() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -523,6 +526,7 @@ async fn executor_local_hex64_writes_128_hex_chars_to_vault() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -548,6 +552,7 @@ async fn executor_local_uuid_writes_uuid_v4_to_vault() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -577,6 +582,7 @@ async fn local_factory_rejects_missing_generator_type() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -601,6 +607,7 @@ async fn local_factory_rejects_unknown_generator_type() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -640,6 +647,7 @@ async fn executor_runs_post_rotate_hooks_in_order() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -663,6 +671,7 @@ async fn executor_post_rotate_failure_does_not_abort_rotation() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -696,6 +705,7 @@ async fn executor_verify_success_logs_verified_true() {
         verify: Some("true".into()), // exits 0
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -720,6 +730,7 @@ async fn executor_no_verify_omits_verified_field_in_log() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -749,6 +760,7 @@ async fn executor_verify_failure_returns_err_and_logs_verified_false() {
         verify: Some("false".into()), // exits 1
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -794,6 +806,7 @@ async fn executor_verify_failure_with_post_rotate_still_runs_post_rotate() {
         verify: Some("false".into()), // exits 1 — strict failure
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: None,
     };
 
@@ -828,6 +841,7 @@ async fn ed25519_keypair_writes_private_public_and_kid() {
         verify: None,
         require_verify: false,
         sync_must_succeed: false,
+        dual_slot: false,
         output_shape: Some(revvault_core::sync::shape::Shape::PemPrivateKey),
     };
 
@@ -893,4 +907,142 @@ settings = { type = "ed25519-keypair" }
     let cfg = revvault_core::rotation::RotationConfig::load(&store_dir).unwrap();
     assert!(cfg.providers["crown"].require_verify);
     assert_eq!(cfg.providers["crown"].verify.as_deref(), Some("true"));
+}
+
+// ---------------------------------------------------------------------------
+// GAP-261 residual: dual_slot rotate + promote
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dual_slot_rotate_writes_next_not_live() {
+    let (_dir, store) = setup_store();
+    // Seed live private so previous snapshot has something to copy.
+    store
+        .set(
+            "revdev/license-signing-private-key",
+            b"-----BEGIN PRIVATE KEY-----\nold\n-----END PRIVATE KEY-----\n",
+        )
+        .unwrap();
+    store
+        .set(
+            "revdev/license-signing-public-key",
+            b"-----BEGIN PUBLIC KEY-----\noldpub\n-----END PUBLIC KEY-----\n",
+        )
+        .unwrap();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "revdev/license-signing-private-key".into(),
+        settings: settings(&[
+            ("type", "ed25519-keypair"),
+            ("public_key_path", "revdev/license-signing-public-key"),
+        ]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
+        dual_slot: true,
+        output_shape: Some(revvault_core::sync::shape::Shape::PemPrivateKey),
+    };
+
+    executor::execute(&store, "license-signing", &provider_config)
+        .await
+        .unwrap();
+
+    // Live unchanged (still old placeholder).
+    let live = store.get("revdev/license-signing-private-key").unwrap();
+    assert!(live.expose_secret().contains("old"));
+
+    // Next has real PKCS#8.
+    let next = store
+        .get("revdev/license-signing-private-key-next")
+        .unwrap();
+    let pkcs8_hdr = concat!("-----BEGIN ", "PRIVATE KEY-----");
+    assert!(next.expose_secret().starts_with(pkcs8_hdr));
+
+    // Previous captured outgoing live.
+    let prev = store
+        .get("revdev/license-signing-private-key-previous")
+        .unwrap();
+    assert!(prev.expose_secret().contains("old"));
+
+    // Promote flips next → live.
+    executor::promote(&store, "license-signing", &provider_config).unwrap();
+    let after = store.get("revdev/license-signing-private-key").unwrap();
+    assert!(after.expose_secret().starts_with(pkcs8_hdr));
+    assert!(!after.expose_secret().contains("old\n"));
+    // Next cleared.
+    assert!(store
+        .get("revdev/license-signing-private-key-next")
+        .is_err());
+}
+
+#[test]
+fn promote_without_dual_slot_errors() {
+    let (_dir, store) = setup_store();
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "x".into(),
+        settings: settings(&[("type", "local"), ("generator_type", "hex32")]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
+        dual_slot: false,
+        output_shape: None,
+    };
+    let err = executor::promote(&store, "x", &provider_config).unwrap_err();
+    assert!(err.to_string().contains("dual_slot"));
+}
+
+#[test]
+fn promote_mirrors_legacy_paths() {
+    let (_dir, store) = setup_store();
+    let live_priv = "-----BEGIN PRIVATE KEY-----\nLIVEPRIV\n-----END PRIVATE KEY-----\n";
+    let live_pub = "-----BEGIN PUBLIC KEY-----\nLIVEPUB\n-----END PUBLIC KEY-----\n";
+    store
+        .set(
+            "revdev/license-signing-private-key-next",
+            live_priv.as_bytes(),
+        )
+        .unwrap();
+    store
+        .set(
+            "revdev/license-signing-public-key-next",
+            live_pub.as_bytes(),
+        )
+        .unwrap();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "revdev/license-signing-private-key".into(),
+        settings: settings(&[
+            ("type", "ed25519-keypair"),
+            ("public_key_path", "revdev/license-signing-public-key"),
+            ("legacy_private_paths", "revdev/license-signing-key"),
+            ("legacy_public_paths", "revdev/license-public-key"),
+        ]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
+        dual_slot: true,
+        output_shape: None,
+    };
+
+    executor::promote(&store, "license-signing", &provider_config).unwrap();
+    assert_eq!(
+        store
+            .get("revdev/license-signing-key")
+            .unwrap()
+            .expose_secret(),
+        live_priv
+    );
+    assert_eq!(
+        store
+            .get("revdev/license-public-key")
+            .unwrap()
+            .expose_secret(),
+        live_pub
+    );
 }
