@@ -377,9 +377,10 @@ fn stream_safe_blocks_tty_get_without_allow_print() {
         .arg("misc/secret")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("stream-safe").and(predicate::str::contains(
-            "REVVAULT_ALLOW_PRINT",
-        )));
+        .stderr(
+            predicate::str::contains("stream-safe")
+                .and(predicate::str::contains("REVVAULT_ALLOW_PRINT")),
+        );
 }
 
 #[test]

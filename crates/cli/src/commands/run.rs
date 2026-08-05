@@ -33,9 +33,9 @@ pub struct RunArgs {
 }
 
 fn parse_env_map(spec: &str) -> anyhow::Result<(String, String)> {
-    let (key, path) = spec.split_once('=').ok_or_else(|| {
-        anyhow::anyhow!("--env expects KEY=vault/path, got {spec:?}")
-    })?;
+    let (key, path) = spec
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("--env expects KEY=vault/path, got {spec:?}"))?;
     let key = key.trim();
     let path = path.trim();
     if key.is_empty() || path.is_empty() {
@@ -77,7 +77,9 @@ pub fn run(args: RunArgs) -> anyhow::Result<()> {
         cmd_parts.remove(0);
     }
     if cmd_parts.is_empty() {
-        anyhow::bail!("revvault run: missing command after options (use: revvault run --env K=path -- cmd…)");
+        anyhow::bail!(
+            "revvault run: missing command after options (use: revvault run --env K=path -- cmd…)"
+        );
     }
 
     let mut child_env: HashMap<String, String> = HashMap::new();
