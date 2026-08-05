@@ -43,13 +43,17 @@ revvault init
 # Store a secret
 echo "sk_live_abc123" | revvault set revealui/prod/stripe/secret-key
 
-# Retrieve it
+# Retrieve it (TTY print; use vault-private / REVVAULT_ALLOW_PRINT=1 under STREAM_SAFE)
 revvault get revealui/prod/stripe/secret-key
+
+# Stream-safe: inject into child env only (paths on argv, never values)
+revvault run --env STRIPE_SECRET_KEY=revealui/dev/stripe/secret-key -- pnpm stripe:seed -- --dry-run
+revvault run --namespace stripe --namespace neon -- pnpm billing:catalog:sync -- --mode test
 
 # Structured output (use --json in scripts — bare `revvault get` is silent in $(...))
 revvault --json get revealui/prod/stripe/secret-key | jq -r .value
 
-# Copy to clipboard instead of printing
+# Copy to clipboard instead of printing (not stream-safe; vault-private only)
 revvault get revealui/prod/stripe/secret-key --clip
 
 # Generate a strong password and store it (default length 32)

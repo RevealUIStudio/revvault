@@ -84,16 +84,20 @@ fn refuse_private_keys(vars: &[(String, String)]) -> anyhow::Result<()> {
     );
 }
 
-pub fn run(args: ExportEnvArgs, json_output: bool) -> anyhow::Result<()> {
+/// Load path → KEY=VALUE pairs (shared with `revvault run`).
+pub fn load_env_vars(args: &ExportEnvArgs) -> anyhow::Result<Vec<(String, String)>> {
     let store = super::open_store()?;
     let secret = store.get(&args.path)?;
     let value = secret.expose_secret();
-
     let vars = parse_env_vars(&args.path, value);
-
     if args.public_only {
         refuse_private_keys(&vars)?;
     }
+    Ok(vars)
+}
+
+pub fn run(args: ExportEnvArgs, json_output: bool) -> anyhow::Result<()> {
+    let vars = load_env_vars(&args)?;
 
     if json_output {
         let items: Vec<serde_json::Value> = vars
