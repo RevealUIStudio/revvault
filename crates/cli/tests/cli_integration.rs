@@ -356,6 +356,78 @@ fn get_full_flag_shows_multiline() {
         .stdout(predicate::str::contains("line1").and(predicate::str::contains("line3")));
 }
 
+#[test]
+fn stream_safe_blocks_tty_get_without_allow_print() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("misc/secret")
+        .write_stdin("super-secret-value")
+        .assert()
+        .success();
+
+    // assert_cmd does not allocate a TTY, so STREAM_SAFE alone still allows
+    // get (piped/script path). Force the human-disclosure path via clip.
+    revvault_cmd(&store, &identity)
+        .env("STREAM_SAFE", "1")
+        .env_remove("REVVAULT_ALLOW_PRINT")
+        .arg("get")
+        .arg("--clip")
+        .arg("misc/secret")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stream-safe").and(predicate::str::contains(
+            "REVVAULT_ALLOW_PRINT",
+        )));
+}
+
+#[test]
+fn stream_safe_allows_get_with_allow_print() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("misc/secret")
+        .write_stdin("visible-when-allowed")
+        .assert()
+        .success();
+
+    revvault_cmd(&store, &identity)
+        .env("STREAM_SAFE", "1")
+        .env("REVVAULT_ALLOW_PRINT", "1")
+        .arg("get")
+        .arg("--full")
+        .arg("misc/secret")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("visible-when-allowed"));
+}
+
+#[test]
+fn run_injects_env_without_printing_value() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("misc/token")
+        .write_stdin("tok_from_vault")
+        .assert()
+        .success();
+
+    revvault_cmd(&store, &identity)
+        .arg("run")
+        .arg("--env")
+        .arg("MY_TOKEN=misc/token")
+        .arg("--")
+        .arg("printenv")
+        .arg("MY_TOKEN")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tok_from_vault"))
+        .stderr(predicate::str::contains("tok_from_vault").not());
+}
+
 // ---------------------------------------------------------------------------
 // init command
 // ---------------------------------------------------------------------------

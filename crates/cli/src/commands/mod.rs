@@ -26,6 +26,8 @@ pub mod list;
 pub mod migrate;
 pub mod rotate;
 pub mod rotation_promote;
+pub mod run;
 pub mod search;
 pub mod set;
+pub mod stream_safe;
 pub mod sync;
