@@ -32,6 +32,17 @@ pub struct SyncArgs {
     /// API token for the target (or set VERCEL_TOKEN / FLY_API_TOKEN env var)
     #[arg(long)]
     pub token: Option<String>,
+
+    /// Only sync these manifest project slugs (Vercel) or fly-app names (Fly).
+    /// Repeatable. GAP-339: reduces unscoped whole-manifest blast radius.
+    #[arg(long = "project", value_name = "SLUG")]
+    pub projects: Vec<String>,
+
+    /// Only sync these env var / secret names (UPPER_SNAKE). Repeatable.
+    /// GAP-339: per-key apply so license private key is never bulk-rewritten
+    /// by accident alongside an unrelated rotation.
+    #[arg(long = "key", value_name = "ENV_VAR")]
+    pub keys: Vec<String>,
 }
 
 // ── TOML manifest schema ────────────────────────────────────────────────────
@@ -299,7 +310,16 @@ async fn run_vercel(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
     let store = PassageStore::open(config)?;
     let client = VercelClient::new(token, manifest.team_id.clone());
 
-    push_mode(&store, &client, &manifest, args.apply, json_output).await
+    push_mode(
+        &store,
+        &client,
+        &manifest,
+        args.apply,
+        json_output,
+        &args.projects,
+        &args.keys,
+    )
+    .await
 }
 
 async fn run_fly(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
@@ -320,7 +340,16 @@ async fn run_fly(args: SyncArgs, json_output: bool) -> anyhow::Result<()> {
     let store = PassageStore::open(config)?;
     let client = FlyClient::new(token);
 
-    push_mode_fly(&store, &client, &manifest, args.apply, json_output).await
+    push_mode_fly(
+        &store,
+        &client,
+        &manifest,
+        args.apply,
+        json_output,
+        &args.projects,
+        &args.keys,
+    )
+    .await
 }
 
 /// Reject a Fly manifest that declares no `[fly-apps.<name>]` entries.
@@ -374,8 +403,21 @@ async fn push_mode(
     manifest: &SyncManifest,
     apply: bool,
     json_output: bool,
+    project_filter: &[String],
+    key_filter: &[String],
 ) -> anyhow::Result<()> {
+    let project_filter_set: std::collections::HashSet<&str> =
+        project_filter.iter().map(|s| s.as_str()).collect();
+    let key_filter_set: std::collections::HashSet<&str> =
+        key_filter.iter().map(|s| s.as_str()).collect();
+
     for (project_name, project_cfg) in &manifest.projects {
+        if !project_filter_set.is_empty() && !project_filter_set.contains(project_name.as_str()) {
+            if !json_output {
+                eprintln!("skip project {} (--project filter)", project_name);
+            }
+            continue;
+        }
         let remote_vars = client.list_env_vars(&project_cfg.project_id).await?;
 
         // Attempt to fetch decrypted values for MATCH detection. Falls back
@@ -444,6 +486,16 @@ async fn push_mode(
                     key: var_name.clone(),
                     action: DiffAction::Skip,
                     reason: Some("in skip list".to_string()),
+                });
+                continue;
+            }
+
+            // GAP-339: optional per-key filter (reduces --apply blast radius)
+            if !key_filter_set.is_empty() && !key_filter_set.contains(var_name.as_str()) {
+                diff.push(DiffEntry {
+                    key: var_name.clone(),
+                    action: DiffAction::Skip,
+                    reason: Some("outside --key filter".to_string()),
                 });
                 continue;
             }
@@ -531,6 +583,10 @@ async fn push_mode(
             }
             if !vault_var_names.contains(&remote_var.key) && !seen_orphans.contains(&remote_var.key)
             {
+                // Scoped --key mode: only report the keys the operator asked about.
+                if !key_filter_set.is_empty() && !key_filter_set.contains(remote_var.key.as_str()) {
+                    continue;
+                }
                 seen_orphans.insert(remote_var.key.clone());
                 diff.push(DiffEntry {
                     key: remote_var.key.clone(),
@@ -758,8 +814,21 @@ async fn push_mode_fly(
     manifest: &FlyManifest,
     apply: bool,
     json_output: bool,
+    project_filter: &[String],
+    key_filter: &[String],
 ) -> anyhow::Result<()> {
+    let project_filter_set: std::collections::HashSet<&str> =
+        project_filter.iter().map(|s| s.as_str()).collect();
+    let key_filter_set: std::collections::HashSet<&str> =
+        key_filter.iter().map(|s| s.as_str()).collect();
+
     for (logical_name, app_cfg) in &manifest.fly_apps {
+        if !project_filter_set.is_empty() && !project_filter_set.contains(logical_name.as_str()) {
+            if !json_output {
+                eprintln!("skip fly-app {} (--project filter)", logical_name);
+            }
+            continue;
+        }
         let remote = client.list_secret_names(&app_cfg.app).await?;
         let remote_names: std::collections::HashSet<String> =
             remote.into_iter().map(|s| s.name).collect();
@@ -774,6 +843,15 @@ async fn push_mode_fly(
                     key: var_name.clone(),
                     action: DiffAction::Skip,
                     reason: Some("in skip list".to_string()),
+                });
+                continue;
+            }
+
+            if !key_filter_set.is_empty() && !key_filter_set.contains(var_name.as_str()) {
+                diff.push(DiffEntry {
+                    key: var_name.clone(),
+                    action: DiffAction::Skip,
+                    reason: Some("outside --key filter".to_string()),
                 });
                 continue;
             }
@@ -1238,7 +1316,7 @@ mod tests {
         });
 
         let client = VercelClient::new("t".into(), None).with_base_url(server.url());
-        push_mode(&store, &client, &manifest, true, true)
+        push_mode(&store, &client, &manifest, true, true, &[], &[])
             .await
             .unwrap();
 
@@ -1298,7 +1376,7 @@ mod tests {
         });
 
         let client = VercelClient::new("t".into(), None).with_base_url(server.url());
-        push_mode(&store, &client, &manifest, true, true)
+        push_mode(&store, &client, &manifest, true, true, &[], &[])
             .await
             .unwrap();
 
@@ -1355,7 +1433,7 @@ mod tests {
         });
 
         let client = VercelClient::new("t".into(), None).with_base_url(server.url());
-        push_mode(&store, &client, &manifest, true, true)
+        push_mode(&store, &client, &manifest, true, true, &[], &[])
             .await
             .unwrap();
 
