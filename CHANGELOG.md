@@ -2,6 +2,13 @@
 
 All notable changes to revvault are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions; versions follow [SemVer 2.0.0](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **`sync vercel|fly --project` / `--key`** (GAP-339): scoped dry-run and apply filters so a single env var can be pushed without rewriting the entire manifest surface (license private key blast radius).
+
+
 ## [0.4.0] — 2026-07-17
 
 ### Changed
