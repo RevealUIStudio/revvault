@@ -32,4 +32,9 @@ CLAUDE.md
 
 # AI tool configs (local only)
 CLAUDE.md
-.claude/
+# Materialized rules tracked (GAP-372 copy-mode); local state stays ignored.
+.claude/*
+!.claude/rules/
+!.claude/agents/
+!.claude/skills/
+!.claude/.revcon-manifest.json

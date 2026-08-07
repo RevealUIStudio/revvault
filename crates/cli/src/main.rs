@@ -10,9 +10,12 @@ Examples:
   revvault get revealui/prod/stripe/secret-key   decrypt and print a secret
   revvault list --tree                           browse the whole store
   revvault export-env revealui/dev/electric      KEY=VALUE lines for shell eval
+  revvault run --env KEY=path -- cmd…            secrets in child env only (stream-safe)
 
 Secret paths follow <project>/<subsystem>/<name>, all lower-kebab.
-Scripts can pipe instead of prompting:  printf %s \"$VALUE\" | revvault set <path>";
+Scripts can pipe instead of prompting:  printf %s \"$VALUE\" | revvault set <path>
+Stream-safe: STREAM_SAFE=1 blocks TTY print/clip of values unless REVVAULT_ALLOW_PRINT=1
+(use a vault-private terminal for full keys). Prefer `run` / with-secrets on camera.";
 
 #[derive(Parser)]
 #[command(
@@ -37,6 +40,8 @@ enum Commands {
     Init(commands::init::InitArgs),
     /// Decrypt and print a secret
     Get(commands::get::GetArgs),
+    /// Load secrets into the child environment only, then exec a command (stream-safe)
+    Run(commands::run::RunArgs),
     /// Store a secret (hidden prompt on a terminal, or piped stdin)
     Set(commands::set::SetArgs),
     /// Generate a strong random password (optionally store under a path)
@@ -57,6 +62,8 @@ enum Commands {
     Migrate(commands::migrate::MigrateArgs),
     /// Rotate API keys for a provider
     Rotate(commands::rotate::RotateArgs),
+    /// Promote dual-slot next → live for a rotation.toml provider (GAP-261)
+    RotationPromote(commands::rotation_promote::RotationPromoteArgs),
     /// Show rotation status
     RotationStatus,
     /// Sync vault secrets with external services (e.g., Vercel env vars)
@@ -74,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
     let result = match cli.command {
         Commands::Init(args) => commands::init::run(args, json),
         Commands::Get(args) => commands::get::run(args, json),
+        Commands::Run(args) => commands::run::run(args),
         Commands::Set(args) => commands::set::run(args, json),
         Commands::Generate(args) => commands::generate::run(args, json),
         Commands::List(args) => commands::list::run(args, json),
@@ -87,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Migrate(args) => commands::migrate::run(args),
         Commands::Rotate(args) => commands::rotate::run(args).await,
+        Commands::RotationPromote(args) => commands::rotation_promote::run(args),
         Commands::RotationStatus => commands::rotate::status(),
         Commands::Sync(args) => commands::sync::run(args, json).await,
         Commands::Doctor(args) => commands::doctor::run(args),

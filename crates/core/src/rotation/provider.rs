@@ -14,6 +14,21 @@ pub struct RotationOutcome {
     /// Opaque identifier for the new key (e.g. numeric token ID).
     /// Stored in the vault for use as `old_key_id` in the next rotation.
     pub new_key_id: Option<String>,
+    /// Extra vault paths written in the same rotation as `new_value`
+    /// (e.g. SPKI public PEM for `ed25519-keypair`). Empty for providers
+    /// that only rotate a single leaf.
+    pub companion_writes: Vec<(String, SecretString)>,
+}
+
+impl RotationOutcome {
+    /// Convenience for single-value providers (http / neon / local).
+    pub fn single(new_value: SecretString, new_key_id: Option<String>) -> Self {
+        Self {
+            new_value,
+            new_key_id,
+            companion_writes: Vec::new(),
+        }
+    }
 }
 
 /// Append-only log entry written to `<store>/.revvault/rotation-log.jsonl`.

@@ -22,4 +22,9 @@ paths = [
   # GAP-260 P2-2: export-env --public-only tests need a private-key-shaped fixture
   # to prove refusal. Dummy PEM only (truncated MC4CAQA… block, not a real key).
   '''crates/cli/tests/cli_integration\.rs''',
+  # GAP-261 P0-6: unit tests assert PKCS#8 PEM headers from ed25519-dalek
+  # generation (runtime keys only; source has no real private material).
+  '''crates/core/src/rotation/providers/keypair\.rs''',
+  # Same header-shape assertions for the executor integration path.
+  '''crates/core/tests/rotation_integration\.rs''',
 ]

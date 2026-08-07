@@ -21,3 +21,6 @@ frontend/src/components/SetupScreen.test.tsx   abs-home-path
 # issue bodies. This is the config that enforces the rule, not a leak of
 # it (mirrors the ci.yml anti-regression entries).
 .gitleaks.issues.toml                   lit-username,abs-home-path,private-jv-repo,private-jv-name
+
+# Materialized revfleet git hardline: ban-instruction names retired org email.
+.claude/rules/git.md                    retired-org-email

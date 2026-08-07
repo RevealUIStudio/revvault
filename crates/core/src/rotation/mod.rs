@@ -18,6 +18,10 @@
 //! - `LocalGeneratorProvider` — cryptographically random values
 //!   (hex32 / hex64 / uuid) without network calls. Selected by
 //!   `settings["type"] = "local"` with `settings["generator_type"]`.
+//! - `Ed25519KeypairProvider` — Ed25519 PKCS#8 private + SPKI public
+//!   PEMs with fleet `computeKeyId` self-assert (GAP-261 P0-6). Selected
+//!   by `settings["type"] = "ed25519-keypair"`; optional
+//!   `settings["public_key_path"]` companion-writes the public PEM.
 //!
 //! All providers configured via `<store>/.revvault/rotation.toml`.
 
@@ -25,6 +29,7 @@ pub mod config;
 pub mod executor;
 pub mod provider;
 pub mod providers;
+pub mod slots;
 pub mod sync_hook;
 
 pub use config::RotationConfig;
