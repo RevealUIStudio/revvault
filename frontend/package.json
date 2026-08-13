@@ -11,6 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@revealui/presentation": "^0.13.1",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-shell": "^2.0.0",
     "react": "^19.2.7",

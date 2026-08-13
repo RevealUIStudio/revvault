@@ -1,3 +1,4 @@
+import { Button } from "@revealui/presentation";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { SecretInfo } from "./types";
@@ -97,12 +98,15 @@ export default function App() {
           <SearchBar query={searchQuery} onSearch={handleSearch} />
         </div>
         <div className="px-4">
-          <button
+          <Button
+            type="button"
+            variant="brand"
+            appearance="solid"
+            size="sm"
             onClick={() => setShowCreate(true)}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-500"
           >
             + New
-          </button>
+          </Button>
         </div>
       </div>
 
