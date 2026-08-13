@@ -1,3 +1,4 @@
+import { Button } from "@revealui/presentation";
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -60,12 +61,15 @@ export function SetupScreen({ onComplete }: SetupScreenProps) {
             password manager or secure offline location.
           </div>
 
-          <button
+          <Button
+            type="button"
+            variant="brand"
+            appearance="solid"
+            className="w-full"
             onClick={onComplete}
-            className="w-full rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-500"
           >
             Open Vault
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -103,13 +107,17 @@ export function SetupScreen({ onComplete }: SetupScreenProps) {
           </div>
         </div>
 
-        <button
+        <Button
+          type="button"
+          variant="brand"
+          appearance="solid"
+          className="w-full"
           onClick={handleInit}
           disabled={loading}
-          className="w-full rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+          isLoading={loading}
         >
-          {loading ? "Initializing..." : "Initialize Vault"}
-        </button>
+          Initialize Vault
+        </Button>
       </div>
     </div>
   );

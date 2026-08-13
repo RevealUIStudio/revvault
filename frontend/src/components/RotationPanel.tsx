@@ -1,3 +1,4 @@
+import { Button } from "@revealui/presentation";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProviderInfo } from "../types";
@@ -120,13 +121,17 @@ function ProviderRow({ provider, status, onRotate }: ProviderRowProps) {
           )}
         </div>
 
-        <button
+        <Button
+          type="button"
+          variant="neutral"
+          appearance="solid"
+          className="shrink-0"
           onClick={onRotate}
           disabled={running}
-          className="shrink-0 rounded-md bg-neutral-800 px-3 py-1.5 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-700 disabled:opacity-50"
+          isLoading={running}
         >
           {running ? "Rotating…" : "Rotate"}
-        </button>
+        </Button>
       </div>
     </div>
   );

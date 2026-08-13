@@ -1,3 +1,4 @@
+import { Button } from "@revealui/presentation";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -99,27 +100,24 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
       )}
 
       <div className="flex gap-2">
-        <button
+        <Button
+          type="button"
+          variant="neutral"
+          appearance="solid"
           onClick={handleReveal}
           disabled={loading}
-          className="rounded-md bg-neutral-800 px-4 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-700 disabled:opacity-50"
+          isLoading={loading}
         >
-          {loading ? "Decrypting..." : revealed ? "Hide" : "Reveal"}
-        </button>
+          {revealed ? "Hide" : "Reveal"}
+        </Button>
 
-        <button
-          onClick={handleCopy}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500"
-        >
+        <Button type="button" variant="brand" appearance="solid" onClick={handleCopy}>
           {copied ? "Copied!" : "Copy"}
-        </button>
+        </Button>
 
-        <button
-          onClick={handleDelete}
-          className="rounded-md bg-red-900 px-4 py-2 text-sm font-medium text-red-200 transition-colors hover:bg-red-800"
-        >
+        <Button type="button" variant="danger" appearance="solid" onClick={handleDelete}>
           Delete
-        </button>
+        </Button>
       </div>
     </div>
   );
