@@ -384,6 +384,62 @@ fn stream_safe_blocks_tty_get_without_allow_print() {
 }
 
 #[test]
+fn stream_safe_export_env_piped_still_works() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("misc/bundle")
+        .write_stdin("FOO=super-secret-export")
+        .assert()
+        .success();
+
+    // assert_cmd is not a TTY, so force the human-disclosure path via the
+    // same clip-shaped gate export-env does not have — STREAM_SAFE + TTY is
+    // covered by gate_human_disclosure(stdout_is_tty). Here we assert the
+    // piped path still works (scripting), matching get.
+    revvault_cmd(&store, &identity)
+        .env("STREAM_SAFE", "1")
+        .env_remove("REVVAULT_ALLOW_PRINT")
+        .arg("export-env")
+        .arg("misc/bundle")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FOO="));
+}
+
+#[test]
+fn stream_safe_blocks_generate_clip_without_allow_print() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .env("STREAM_SAFE", "1")
+        .env_remove("REVVAULT_ALLOW_PRINT")
+        .arg("generate")
+        .arg("--clip")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("stream-safe")
+                .and(predicate::str::contains("REVVAULT_ALLOW_PRINT")),
+        );
+}
+
+#[test]
+fn stream_safe_allows_generate_store_only() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .env("STREAM_SAFE", "1")
+        .env_remove("REVVAULT_ALLOW_PRINT")
+        .arg("generate")
+        .arg("misc/generated")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
 fn stream_safe_allows_get_with_allow_print() {
     let (_dir, store, identity) = setup_temp_store();
 

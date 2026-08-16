@@ -7,6 +7,8 @@ use serde_json::json;
 use revvault_core::Config;
 use revvault_core::PassageStore;
 
+use super::stream_safe;
+
 const LOWER: &str = "abcdefghijklmnopqrstuvwxyz";
 const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const DIGITS: &str = "0123456789";
@@ -86,6 +88,14 @@ pub fn run(args: GenerateArgs, json_output: bool) -> anyhow::Result<()> {
     }
 
     let password = generate_password(args.length, &sets);
+
+    // Store-only (path set, no --print/--clip) may run on a stream-safe TTY.
+    // Print, clip, or generate-without-store dumps the value — same gate as `get`.
+    let will_print = args.path.is_none() || args.print;
+    stream_safe::gate_human_disclosure(
+        args.clip,
+        (will_print || json_output) && stream_safe::stdout_is_tty(),
+    )?;
 
     let stored_path = if let Some(path) = args.path.as_ref() {
         let config = Config::resolve()?;
