@@ -995,6 +995,124 @@ fn promote_without_dual_slot_errors() {
     assert!(err.to_string().contains("dual_slot"));
 }
 
+// ---------------------------------------------------------------------------
+// GAP-261 residual: dual_slot rotation-verify (read-only)
+// ---------------------------------------------------------------------------
+
+/// Golden SPKI PEM from keypair::compute_key_id unit test (kid = f7a7c27e).
+fn golden_public_pem() -> &'static str {
+    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\n-----END PUBLIC KEY-----\n"
+}
+
+fn dual_slot_keypair_config() -> revvault_core::rotation::config::ProviderConfig {
+    revvault_core::rotation::config::ProviderConfig {
+        secret_path: "revdev/license-signing-private-key".into(),
+        settings: settings(&[
+            ("type", "ed25519-keypair"),
+            ("public_key_path", "revdev/license-signing-public-key"),
+        ]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
+        dual_slot: true,
+        output_shape: None,
+    }
+}
+
+#[test]
+fn verify_dual_slot_ok_when_next_id_matches_public() {
+    let (_dir, store) = setup_store();
+    let pem = golden_public_pem();
+    let kid = revvault_core::rotation::providers::keypair::compute_key_id(pem);
+    assert_eq!(kid, "f7a7c27e");
+
+    store
+        .set("revdev/license-signing-private-key-next-id", kid.as_bytes())
+        .unwrap();
+    store
+        .set("revdev/license-signing-public-key-next", pem.as_bytes())
+        .unwrap();
+
+    executor::verify_dual_slot(&store, "license-signing", &dual_slot_keypair_config()).unwrap();
+}
+
+#[test]
+fn verify_dual_slot_fails_on_kid_mismatch() {
+    let (_dir, store) = setup_store();
+    let pem = golden_public_pem();
+    store
+        .set("revdev/license-signing-private-key-next-id", b"deadbeef")
+        .unwrap();
+    store
+        .set("revdev/license-signing-public-key-next", pem.as_bytes())
+        .unwrap();
+
+    let err = executor::verify_dual_slot(&store, "license-signing", &dual_slot_keypair_config())
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("kid mismatch"),
+        "unexpected: {err}"
+    );
+}
+
+#[test]
+fn verify_dual_slot_fails_when_next_id_missing() {
+    let (_dir, store) = setup_store();
+    store
+        .set(
+            "revdev/license-signing-public-key-next",
+            golden_public_pem().as_bytes(),
+        )
+        .unwrap();
+
+    let err = executor::verify_dual_slot(&store, "license-signing", &dual_slot_keypair_config())
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("missing next-id"),
+        "unexpected: {err}"
+    );
+}
+
+#[test]
+fn verify_dual_slot_fails_without_dual_slot_flag() {
+    let (_dir, store) = setup_store();
+    let mut cfg = dual_slot_keypair_config();
+    cfg.dual_slot = false;
+    let err = executor::verify_dual_slot(&store, "license-signing", &cfg).unwrap_err();
+    assert!(err.to_string().contains("dual_slot"));
+}
+
+#[tokio::test]
+async fn verify_dual_slot_after_real_dual_slot_rotate() {
+    let (_dir, store) = setup_store();
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "revdev/license-signing-private-key".into(),
+        settings: settings(&[
+            ("type", "ed25519-keypair"),
+            ("public_key_path", "revdev/license-signing-public-key"),
+        ]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
+        dual_slot: true,
+        output_shape: Some(revvault_core::sync::shape::Shape::PemPrivateKey),
+    };
+
+    executor::execute(&store, "license-signing", &provider_config)
+        .await
+        .unwrap();
+
+    executor::verify_dual_slot(&store, "license-signing", &provider_config).unwrap();
+
+    // Live still absent or unchanged: rotate never wrote live private for empty seed.
+    // next private must exist; live path may be missing.
+    assert!(store.get("revdev/license-signing-private-key-next").is_ok());
+}
+
 #[test]
 fn promote_mirrors_legacy_paths() {
     let (_dir, store) = setup_store();

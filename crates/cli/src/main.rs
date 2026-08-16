@@ -64,6 +64,8 @@ enum Commands {
     Rotate(commands::rotate::RotateArgs),
     /// Promote dual-slot next → live for a rotation.toml provider (GAP-261)
     RotationPromote(commands::rotation_promote::RotationPromoteArgs),
+    /// Verify dual-slot next leaves (presence + kid match; no promote)
+    RotationVerify(commands::rotation_verify::RotationVerifyArgs),
     /// Show rotation status
     RotationStatus,
     /// Sync vault secrets with external services (e.g., Vercel env vars)
@@ -96,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Migrate(args) => commands::migrate::run(args),
         Commands::Rotate(args) => commands::rotate::run(args).await,
         Commands::RotationPromote(args) => commands::rotation_promote::run(args),
+        Commands::RotationVerify(args) => commands::rotation_verify::run(args),
         Commands::RotationStatus => commands::rotate::status(),
         Commands::Sync(args) => commands::sync::run(args, json).await,
         Commands::Doctor(args) => commands::doctor::run(args),
