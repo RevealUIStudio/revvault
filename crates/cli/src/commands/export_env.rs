@@ -97,6 +97,10 @@ pub fn load_env_vars(args: &ExportEnvArgs) -> anyhow::Result<Vec<(String, String
 }
 
 pub fn run(args: ExportEnvArgs, json_output: bool) -> anyhow::Result<()> {
+    // Default output prints `export KEY=value`. Refuse on a TTY under
+    // STREAM_SAFE. Piped `eval "$(revvault export-env …)"` is non-TTY.
+    super::stream_safe::gate_human_disclosure(false, super::stream_safe::stdout_is_tty())?;
+
     let vars = load_env_vars(&args)?;
 
     if json_output {

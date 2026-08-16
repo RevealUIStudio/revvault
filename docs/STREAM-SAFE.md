@@ -28,8 +28,11 @@ revvault run \
   -- pnpm billing:catalog:sync -- --mode test
 ```
 
-Under `STREAM_SAFE=1`, `revvault get` / `--clip` refuse without break-glass.
-Piped use (scripts, `passenv`) still works when stdout is not a TTY.
+Under `STREAM_SAFE=1`, `revvault get` / `--clip`, `revvault export-env`
+(TTY print), and `revvault generate` (print / `--clip`) refuse without
+break-glass. Piped use (scripts, `passenv`, `eval "$(revvault export-env …)"`)
+still works when stdout is not a TTY. Store-only `generate <path>` (no
+`--print` / `--clip`) is allowed on a stream-safe TTY.
 
 ## Vault-private (OBS window excluded)
 
