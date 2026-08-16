@@ -398,9 +398,7 @@ pub fn verify_dual_slot(
 
     let next_id_path = key_id_path(&slots::next_path(&provider_config.secret_path));
     let next_id_raw = store.get(&next_id_path).map_err(|e| {
-        anyhow::anyhow!(
-            "missing next-id leaf '{next_id_path}' (run dual-slot rotate first): {e}"
-        )
+        anyhow::anyhow!("missing next-id leaf '{next_id_path}' (run dual-slot rotate first): {e}")
     })?;
     let stored_kid = next_id_raw.expose_secret().trim().to_string();
     if stored_kid.is_empty() {
@@ -445,9 +443,7 @@ pub fn verify_dual_slot(
     eprintln!("Operator checklist (this command never promotes or rotates):");
     eprintln!("  [ ] Soak NEXT kid ({stored_kid}) on hosted multi-key verify (GAP-259)");
     eprintln!("  [ ] Confirm remote readback if any sync targets applied");
-    eprintln!(
-        "  [ ] Owner runs: revvault rotation-promote {provider_name}"
-    );
+    eprintln!("  [ ] Owner runs: revvault rotation-promote {provider_name}");
     eprintln!("      (overwrites the live signing key — not automatic)");
     eprintln!();
     eprintln!(

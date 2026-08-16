@@ -1029,16 +1029,10 @@ fn verify_dual_slot_ok_when_next_id_matches_public() {
     assert_eq!(kid, "f7a7c27e");
 
     store
-        .set(
-            "revdev/license-signing-private-key-next-id",
-            kid.as_bytes(),
-        )
+        .set("revdev/license-signing-private-key-next-id", kid.as_bytes())
         .unwrap();
     store
-        .set(
-            "revdev/license-signing-public-key-next",
-            pem.as_bytes(),
-        )
+        .set("revdev/license-signing-public-key-next", pem.as_bytes())
         .unwrap();
 
     executor::verify_dual_slot(&store, "license-signing", &dual_slot_keypair_config()).unwrap();
@@ -1049,21 +1043,14 @@ fn verify_dual_slot_fails_on_kid_mismatch() {
     let (_dir, store) = setup_store();
     let pem = golden_public_pem();
     store
-        .set(
-            "revdev/license-signing-private-key-next-id",
-            b"deadbeef",
-        )
+        .set("revdev/license-signing-private-key-next-id", b"deadbeef")
         .unwrap();
     store
-        .set(
-            "revdev/license-signing-public-key-next",
-            pem.as_bytes(),
-        )
+        .set("revdev/license-signing-public-key-next", pem.as_bytes())
         .unwrap();
 
-    let err =
-        executor::verify_dual_slot(&store, "license-signing", &dual_slot_keypair_config())
-            .unwrap_err();
+    let err = executor::verify_dual_slot(&store, "license-signing", &dual_slot_keypair_config())
+        .unwrap_err();
     assert!(
         err.to_string().contains("kid mismatch"),
         "unexpected: {err}"
@@ -1080,9 +1067,8 @@ fn verify_dual_slot_fails_when_next_id_missing() {
         )
         .unwrap();
 
-    let err =
-        executor::verify_dual_slot(&store, "license-signing", &dual_slot_keypair_config())
-            .unwrap_err();
+    let err = executor::verify_dual_slot(&store, "license-signing", &dual_slot_keypair_config())
+        .unwrap_err();
     assert!(
         err.to_string().contains("missing next-id"),
         "unexpected: {err}"
@@ -1124,9 +1110,7 @@ async fn verify_dual_slot_after_real_dual_slot_rotate() {
 
     // Live still absent or unchanged: rotate never wrote live private for empty seed.
     // next private must exist; live path may be missing.
-    assert!(store
-        .get("revdev/license-signing-private-key-next")
-        .is_ok());
+    assert!(store.get("revdev/license-signing-private-key-next").is_ok());
 }
 
 #[test]
