@@ -26,6 +26,7 @@ pub mod list;
 pub mod migrate;
 pub mod rotate;
 pub mod rotation_promote;
+pub mod rotation_verify;
 pub mod run;
 pub mod search;
 pub mod set;

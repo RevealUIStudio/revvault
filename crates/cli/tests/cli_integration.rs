@@ -909,6 +909,86 @@ async fn rotate_executes_via_cli() {
 }
 
 // ---------------------------------------------------------------------------
+// rotation-verify command (GAP-261 residual)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rotation_verify_missing_provider_fails() {
+    let (_dir, store, identity) = setup_temp_store();
+    let revvault_dir = Path::new(&store).join(".revvault");
+    std::fs::create_dir_all(&revvault_dir).unwrap();
+    std::fs::write(
+        revvault_dir.join("rotation.toml"),
+        r#"
+[providers.other]
+secret_path = "misc/other"
+dual_slot = true
+settings = { type = "local", generator_type = "hex32" }
+"#,
+    )
+    .unwrap();
+
+    revvault_cmd(&store, &identity)
+        .arg("rotation-verify")
+        .arg("license-signing")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn rotation_verify_matches_after_seeding_next_leaves() {
+    let (_dir, store, identity) = setup_temp_store();
+    let revvault_dir = Path::new(&store).join(".revvault");
+    std::fs::create_dir_all(&revvault_dir).unwrap();
+    // Same shape as docs/examples/rotation-license-signing.toml (fixture paths).
+    std::fs::write(
+        revvault_dir.join("rotation.toml"),
+        r#"
+[providers.license-signing]
+secret_path = "revdev/license-signing-private-key"
+dual_slot = true
+require_verify = true
+verify = "revvault rotation-verify license-signing"
+output_shape = "pem-private-key"
+
+[providers.license-signing.settings]
+type = "ed25519-keypair"
+public_key_path = "revdev/license-signing-public-key"
+"#,
+    )
+    .unwrap();
+
+    // `revvault set` trims stdin, so the stored PEM has no trailing newline.
+    // Kid is SHA-256(trimmed PEM UTF-8)[:8 hex] — same algorithm as keypair::compute_key_id.
+    let pem = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\n-----END PUBLIC KEY-----";
+    let kid = "967eb0d0";
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("revdev/license-signing-private-key-next-id")
+        .write_stdin(kid)
+        .assert()
+        .success();
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("revdev/license-signing-public-key-next")
+        .write_stdin(pem)
+        .assert()
+        .success();
+
+    revvault_cmd(&store, &identity)
+        .arg("rotation-verify")
+        .arg("license-signing")
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains(format!("kid={kid}"))
+                .and(predicate::str::contains("rotation-promote license-signing"))
+                .and(predicate::str::contains("never promotes or rotates")),
+        );
+}
+
+// ---------------------------------------------------------------------------
 // rotation-status command
 // ---------------------------------------------------------------------------
 

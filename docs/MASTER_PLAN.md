@@ -34,7 +34,7 @@ Workspace version: **`0.4.0`** (`Cargo.toml` `[workspace.package]`, `CHANGELOG.m
 - **Cargo workspace** — `crates/core`, `crates/cli`, `crates/tauri-app` (edition 2021, rust-version 1.88)
 - **Frontend** — Tauri 2 + React 19 + Tailwind v4 at `frontend/`
 - **Encryption** — age x25519; identity resolution: config → `REVVAULT_IDENTITY` → `~/.config/age/keys.txt` → legacy `~/.age-identity/keys.txt`
-- **CLI** — get/set/list/search/delete/edit/export-env/generate/sync/doctor/rotate/rotation-status (see `docs/MASTER_SPEC.md`)
+- **CLI** — get/set/list/search/delete/edit/export-env/generate/sync/doctor/rotate/rotation-verify/rotation-promote/rotation-status (see `docs/MASTER_SPEC.md`)
 - **Sync** — Vercel push-only (`--pull` removed in 0.2.0); shape validation; `sensitive` create preservation (0.3.0)
 - **Rotation** — providers `local` / HTTP / neon; shape gates; rotation log
 - **0.4.0** — `get` fails loud on decrypt failure; empty-value warning on stderr
