@@ -7,6 +7,7 @@ All notable changes to revvault are documented here. Follows [Keep a Changelog](
 ### Fixed
 
 - **Root `LICENSE` was an FSL-1.1-MIT paste for `@revealui/harnesses`.** Replaced with the MIT license already declared in `Cargo.toml` and the README so GitHub can detect MIT. README path examples that used `revforge/customers/...` are now marked operator/private (RevForge has no public repo).
+- **`h2` 0.4.13 → 0.4.17** (lockfile only): closes `RUSTSEC-2026-0258` (unbounded empty DATA frames). Transitive via `hyper` / `reqwest`; no product-code change.
 
 ### Added
 
