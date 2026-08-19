@@ -4,6 +4,10 @@ All notable changes to revvault are documented here. Follows [Keep a Changelog](
 
 ## Unreleased
 
+### Fixed
+
+- **Root `LICENSE` was an FSL-1.1-MIT paste for `@revealui/harnesses`.** Replaced with the MIT license already declared in `Cargo.toml` and the README so GitHub can detect MIT. README path examples that used `revforge/customers/...` are now marked operator/private (RevForge has no public repo).
+
 ### Added
 
 - **`sync vercel|fly --project` / `--key`** (GAP-339): scoped dry-run and apply filters so a single env var can be pushed without rewriting the entire manifest surface (license private key blast radius).

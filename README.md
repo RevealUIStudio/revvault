@@ -120,7 +120,7 @@ Paths are lower-kebab, grouped by repo or product, then by subsystem:
 | `revealui/dev/<subsystem>/<name>` | `revealui/dev/electric/service-url`, `revealui/dev/admin-session-cookie` |
 | `revealui/prod/<subsystem>/<name>` | `revealui/prod/neon/postgres-url`, `revealui/prod/stripe/secret-key`, `revealui/prod/stripe/webhook-secret` |
 | `revealui/prod/storage/r2/<name>` | `revealui/prod/storage/r2/access-key-id` |
-| `revforge/customers/<slug>/<name>` | `revforge/customers/acme/admin-password` |
+| `revforge/customers/<slug>/<name>` | Operator/private RevForge tenant path (no public RevForge repo), e.g. `revforge/customers/acme/admin-password` |
 | `revdev/<name>` | `revdev/license-signing-private-key` |
 | `credentials/<system>/<name>` | `credentials/github/personal-token`, `credentials/anthropic/api-key` |
 
@@ -161,7 +161,7 @@ Secrets live in a directory hierarchy as `.age` files:
 │   └── prod/
 │       ├── neon/postgres-url.age
 │       └── stripe/secret-key.age
-├── revforge/
+├── revforge/                 # operator/private project namespace (RevForge is not a public repo)
 │   └── customers/
 │       └── acme/admin-password.age
 ├── credentials/
@@ -191,4 +191,4 @@ Library errors use `thiserror`; binary errors use `anyhow`. Decrypted values are
 
 ## License
 
-MIT.
+[MIT](LICENSE).
