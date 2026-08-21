@@ -194,7 +194,7 @@ impl RotationProvider for GenericHttpProvider {
     async fn dry_run(&self) -> Result<String> {
         let body = self.create_body.replace("{current_key}", "[current_key]");
         let mut steps = vec![
-            format!("1. Read current key from vault (already loaded)"),
+            "1. Read current key from vault (already loaded)".to_string(),
             format!(
                 "2. {} {} with body: {}",
                 self.create_method, self.create_url, body

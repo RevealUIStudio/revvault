@@ -928,7 +928,7 @@ async fn executor_verify_failure_with_post_rotate_still_runs_post_rotate() {
     // verify failed.
     assert!(
         marker.exists(),
-        "post_rotate (step 8) runs before verify (step 9), so marker should exist even when verify fails"
+        "post_rotate (step 9) runs before verify (step 10), so marker should exist even when verify fails"
     );
 }
 
