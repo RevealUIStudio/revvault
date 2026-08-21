@@ -29,6 +29,13 @@ export function RotationPanel() {
   }, [loadProviders]);
 
   async function handleRotate(name: string) {
+    if (
+      !confirm(
+        `Rotate provider "${name}"? This creates a new key and revokes the old one.`
+      )
+    ) {
+      return;
+    }
     setStatuses((prev) => ({ ...prev, [name]: { type: "running" } }));
     try {
       await invoke("rotate_secret", { providerName: name });

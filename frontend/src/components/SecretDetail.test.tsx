@@ -83,12 +83,9 @@ describe("SecretDetail", () => {
     );
   });
 
-  it("shows 'Copied!' after successful copy", async () => {
+  it("copies via copy_secret(path) without sending the value through JS", async () => {
     const user = userEvent.setup();
-    // First call (get_secret) returns the value; second (copy_to_clipboard) resolves
-    mockInvoke
-      .mockResolvedValueOnce("the-secret")
-      .mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValue(undefined);
 
     render(<SecretDetail path="misc/token" onDeleted={vi.fn()} />);
 
@@ -96,6 +93,17 @@ describe("SecretDetail", () => {
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Copied!" })).toBeInTheDocument()
+    );
+    expect(mockInvoke).toHaveBeenCalledWith("copy_secret", {
+      path: "misc/token",
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "copy_to_clipboard",
+      expect.anything()
+    );
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "get_secret",
+      expect.anything()
     );
   });
 

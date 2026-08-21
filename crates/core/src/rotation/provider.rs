@@ -59,7 +59,8 @@ pub struct RotationLogEntry {
 /// Each provider is constructed with the current key value (read from the
 /// vault by the executor) and is responsible only for API interactions.
 /// Vault I/O (storing the new value, updating the key-ID record) is handled
-/// by the executor after `rotate()` returns.
+/// by the executor after `rotate()` returns. Revocation of the previous
+/// credential happens in [`revoke_previous`] only after that write succeeds.
 #[async_trait]
 pub trait RotationProvider: Send + Sync {
     /// Provider name (e.g. "stripe", "vercel", "github").
@@ -72,7 +73,14 @@ pub trait RotationProvider: Send + Sync {
     /// Return a human-readable description of what `rotate` would do.
     async fn dry_run(&self) -> Result<String>;
 
-    /// Execute the rotation: create new key, revoke old key.
-    /// Returns the new secret value and optional key ID; does not touch the vault.
+    /// Create a new key. Does not revoke the previous credential and does
+    /// not touch the vault. The executor writes the new value, then calls
+    /// [`revoke_previous`].
     async fn rotate(&self) -> Result<RotationOutcome>;
+
+    /// Revoke the previous credential after the new value is in the vault.
+    /// Default is a no-op (local / keypair / neon have no separate revoke).
+    async fn revoke_previous(&self) -> Result<()> {
+        Ok(())
+    }
 }

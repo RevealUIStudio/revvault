@@ -42,9 +42,10 @@ fn key_id_path(secret_path: &str) -> String {
 /// 1. Read current key from vault
 /// 2. Read previous key ID from vault (if stored)
 /// 3. Build and preflight the provider (factory in `providers::build_provider`)
-/// 4. Execute rotation (create new key, revoke old key)
+/// 4. Execute rotation (create new key only — no revoke yet)
 /// 5. Write new key to vault
 /// 6. Write new key ID to vault (if provider returned one)
+/// 6b. Revoke the previous key (skipped for dual-slot; live stays valid)
 /// 7. Apply post-rotation sync hook (if `[sync.*]` configured)
 /// 8. Run `post_rotate` user hooks (warn-on-failure)
 /// 9. Run `verify` gate (strict — Err on failure)
@@ -149,6 +150,13 @@ pub async fn execute(
             .upsert(&kid_write, id.as_bytes())
             .map_err(|e| anyhow::anyhow!("cannot write key ID to vault: {e}"))?;
     }
+
+    // 6b. Revoke the previous key only after the new value is in the vault.
+    // Dual-slot keeps live unchanged, so revoking here would lock out the live key.
+    if !provider_config.dual_slot {
+        provider.revoke_previous().await?;
+    }
+
     // 7. Post-rotation sync hook. The vault is already on the
     // new value at this point (live or dual-slot next); sync is best-effort
     // by default and infallible at the function level (failures land as log
