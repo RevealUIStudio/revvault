@@ -1,5 +1,5 @@
 import { Button } from "@revealui/presentation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface SecretDetailProps {
@@ -7,19 +7,34 @@ interface SecretDetailProps {
   onDeleted: () => void;
 }
 
+const REVEAL_TTL_MS = 15_000;
+
 export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
   const [revealed, setRevealed] = useState(false);
-  const [value, setValue] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const revealEl = useRef<HTMLPreElement>(null);
+  const revealTimer = useRef<number | null>(null);
+
+  function clearReveal() {
+    if (revealEl.current) {
+      revealEl.current.textContent = "";
+    }
+    if (revealTimer.current !== null) {
+      window.clearTimeout(revealTimer.current);
+      revealTimer.current = null;
+    }
+    setRevealed(false);
+  }
 
   useEffect(() => {
-    setRevealed(false);
-    setValue(null);
+    clearReveal();
     setCopied(false);
     setError(null);
   }, [path]);
+
+  useEffect(() => () => clearReveal(), []);
 
   if (!path) {
     return (
@@ -31,17 +46,22 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
 
   async function handleReveal() {
     if (revealed) {
-      setRevealed(false);
-      setValue(null);
+      clearReveal();
       return;
     }
 
     setLoading(true);
     setError(null);
     try {
+      // Short-lived display only — never stored in React state.
       const result = await invoke<string>("get_secret", { path });
-      setValue(result);
+      if (revealEl.current) {
+        revealEl.current.textContent = result;
+      }
       setRevealed(true);
+      revealTimer.current = window.setTimeout(() => {
+        clearReveal();
+      }, REVEAL_TTL_MS);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -52,8 +72,7 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
   async function handleCopy() {
     setError(null);
     try {
-      const secret = value ?? (await invoke<string>("get_secret", { path }));
-      await invoke("copy_to_clipboard", { value: secret });
+      await invoke("copy_secret", { path });
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
@@ -82,11 +101,13 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
       </div>
 
       <div className="mb-4 rounded-md border border-neutral-700 bg-neutral-900 p-4">
-        {revealed && value ? (
-          <pre className="whitespace-pre-wrap break-all font-mono text-sm text-neutral-200">
-            {value}
-          </pre>
-        ) : (
+        <pre
+          ref={revealEl}
+          className={`whitespace-pre-wrap break-all font-mono text-sm text-neutral-200 ${
+            revealed ? "" : "hidden"
+          }`}
+        />
+        {!revealed && (
           <div className="font-mono text-sm text-neutral-600">
             {"*".repeat(32)}
           </div>

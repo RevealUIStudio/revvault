@@ -97,6 +97,43 @@ fn from_config_accepts_minimal_settings() {
     .is_ok());
 }
 
+#[test]
+fn from_config_rejects_old_key_in_revoke_url() {
+    let s = settings(&[
+        ("create_url", "https://example.com/keys"),
+        ("response_field", "key"),
+        ("revoke_url", "https://example.com/keys/{old_key}"),
+    ]);
+    let err = GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s,
+    );
+    assert!(err.is_err());
+    let msg = err.unwrap_err().to_string();
+    assert!(
+        msg.contains("{old_key}"),
+        "error should mention the forbidden placeholder: {msg}"
+    );
+}
+
+#[test]
+fn from_config_accepts_old_key_id_in_revoke_url() {
+    let s = settings(&[
+        ("create_url", "https://example.com/keys"),
+        ("response_field", "key"),
+        ("revoke_url", "https://example.com/keys/{old_key_id}"),
+    ]);
+    assert!(GenericHttpProvider::from_config(
+        "test".into(),
+        SecretString::from("old".to_string()),
+        None,
+        &s
+    )
+    .is_ok());
+}
+
 // ---------------------------------------------------------------------------
 // Preflight URL validation
 // ---------------------------------------------------------------------------
@@ -236,7 +273,7 @@ async fn rotate_extracts_nested_response_field() {
 }
 
 #[tokio::test]
-async fn rotate_revokes_old_key_by_value() {
+async fn rotate_does_not_revoke() {
     let mut server = Server::new_async().await;
 
     let _create = server
@@ -247,28 +284,32 @@ async fn rotate_revokes_old_key_by_value() {
         .create_async()
         .await;
 
-    let _revoke = server
-        .mock("DELETE", "/keys/old-key-value")
+    let revoke = server
+        .mock("DELETE", "/keys/old-id-123")
         .with_status(204)
+        .expect(0)
         .create_async()
         .await;
 
     let s = settings(&[
         ("create_url", &format!("{}/keys", server.url())),
         ("response_field", "key"),
-        ("revoke_url", &format!("{}/keys/{{old_key}}", server.url())),
+        (
+            "revoke_url",
+            &format!("{}/keys/{{old_key_id}}", server.url()),
+        ),
     ]);
     let p = GenericHttpProvider::from_config(
         "test".into(),
         SecretString::from("old-key-value".to_string()),
-        None,
+        Some("old-id-123".into()),
         &s,
     )
     .unwrap();
     let outcome = p.rotate().await.unwrap();
 
     assert_eq!(outcome.new_value.expose_secret(), "brand-new-key");
-    _revoke.assert_async().await;
+    revoke.assert_async().await;
 }
 
 #[tokio::test]
@@ -306,6 +347,7 @@ async fn rotate_revokes_old_key_by_id() {
     )
     .unwrap();
     let outcome = p.rotate().await.unwrap();
+    p.revoke_previous().await.unwrap();
 
     assert_eq!(outcome.new_value.expose_secret(), "new-key");
     assert_eq!(outcome.new_key_id.as_deref(), Some("new-id-456"));
@@ -479,6 +521,74 @@ async fn executor_uses_stored_key_id_for_revocation() {
     _revoke.assert_async().await;
     let new_key = store.get("credentials/svc/token").unwrap();
     assert_eq!(new_key.expose_secret(), "next-key");
+}
+
+#[tokio::test]
+async fn executor_write_fail_does_not_revoke() {
+    let mut server = Server::new_async().await;
+
+    let _create = server
+        .mock("POST", "/keys")
+        .with_status(201)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"key":"next-key","id":"next-id"}"#)
+        .create_async()
+        .await;
+
+    let revoke = server
+        .mock("DELETE", "/keys/prev-id-from-vault")
+        .with_status(204)
+        .expect(0)
+        .create_async()
+        .await;
+
+    let (_dir, store) = setup_store();
+    store
+        .set("credentials/svc/token", b"current-token")
+        .unwrap();
+    store
+        .set("credentials/svc/token-id", b"prev-id-from-vault")
+        .unwrap();
+
+    // Make the live leaf unwritable so upsert fails after create succeeds.
+    let age_path = store.store_dir().join("credentials/svc/token.age");
+    let mut perms = std::fs::metadata(&age_path).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&age_path, perms).unwrap();
+
+    let provider_config = revvault_core::rotation::config::ProviderConfig {
+        secret_path: "credentials/svc/token".into(),
+        settings: settings(&[
+            ("create_url", &format!("{}/keys", server.url())),
+            ("response_field", "key"),
+            ("id_field", "id"),
+            (
+                "revoke_url",
+                &format!("{}/keys/{{old_key_id}}", server.url()),
+            ),
+        ]),
+        sync: None,
+        post_rotate: vec![],
+        verify: None,
+        require_verify: false,
+        sync_must_succeed: false,
+        dual_slot: false,
+        output_shape: None,
+    };
+
+    let err = executor::execute(&store, "svc", &provider_config)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("cannot write new key"),
+        "unexpected error: {err}"
+    );
+
+    revoke.assert_async().await;
+
+    // Old value remains readable (readonly file can still be decrypted).
+    let old = store.get("credentials/svc/token").unwrap();
+    assert_eq!(old.expose_secret(), "current-token");
 }
 
 // ---------------------------------------------------------------------------
@@ -818,7 +928,7 @@ async fn executor_verify_failure_with_post_rotate_still_runs_post_rotate() {
     // verify failed.
     assert!(
         marker.exists(),
-        "post_rotate (step 8) runs before verify (step 9), so marker should exist even when verify fails"
+        "post_rotate (step 9) runs before verify (step 10), so marker should exist even when verify fails"
     );
 }
 

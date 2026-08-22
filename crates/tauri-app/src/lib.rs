@@ -31,6 +31,11 @@ fn list_secrets(state: State<AppState>, prefix: Option<String>) -> Result<Vec<Se
         .collect())
 }
 
+/// Ephemeral reveal for a short-lived frontend display.
+///
+/// Callers must not persist the return value in React state or any other
+/// long-lived JS heap slot. Prefer [`copy_secret`] when the operator only
+/// needs the clipboard.
 #[tauri::command]
 fn get_secret(state: State<AppState>, path: String) -> Result<String, String> {
     let guard = state.store.lock().map_err(|e| e.to_string())?;
@@ -94,16 +99,27 @@ fn init_vault_cmd() -> Result<InitSummary, String> {
     })
 }
 
+/// Copy a vault secret to the clipboard without sending the value to JS.
+///
+/// Auto-clears after 45 seconds if the clipboard still holds this value.
 #[tauri::command]
-fn copy_to_clipboard(value: String) -> Result<(), String> {
+fn copy_secret(state: State<AppState>, path: String) -> Result<(), String> {
+    let value = {
+        let guard = state.store.lock().map_err(|e| e.to_string())?;
+        let store = guard.as_ref().ok_or("Store not initialized")?;
+        let secret = store.get(&path).map_err(|e| e.to_string())?;
+        secret.expose_secret().to_string()
+    };
+
     let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(&value).map_err(|e| e.to_string())?;
 
-    // Auto-clear after 45 seconds
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(45));
         if let Ok(mut cb) = Clipboard::new() {
-            let _ = cb.set_text("");
+            if cb.get_text().ok().as_deref() == Some(value.as_str()) {
+                let _ = cb.set_text("");
+            }
         }
     });
 
@@ -188,7 +204,7 @@ pub fn run() {
             set_secret,
             delete_secret,
             search_secrets,
-            copy_to_clipboard,
+            copy_secret,
             list_rotation_providers,
             rotate_secret,
         ])
