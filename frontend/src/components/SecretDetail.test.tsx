@@ -32,15 +32,55 @@ describe("SecretDetail", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows a masked value and never offers in-webview reveal", () => {
+  it("shows a masked value and a Reveal control that never writes IPC into the DOM", () => {
     render(<SecretDetail path="misc/token" onDeleted={vi.fn()} />);
     expect(screen.getByText("*".repeat(32))).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Reveal" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reveal" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Hide" })).not.toBeInTheDocument();
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it("does not call get_secret on mount or interaction", async () => {
+  it("reveals via reveal_secret(path) without writing a value into the DOM", async () => {
+    const user = userEvent.setup();
+    // Even if a buggy backend returned a string, the UI must not display it.
+    mockInvoke.mockResolvedValue("sk_live_secret");
+
+    render(<SecretDetail path="credentials/stripe/key" onDeleted={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Reveal" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Shown" })).toBeInTheDocument()
+    );
+    expect(mockInvoke).toHaveBeenCalledWith("reveal_secret", {
+      path: "credentials/stripe/key",
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "get_secret",
+      expect.anything()
+    );
+    expect(screen.queryByText("sk_live_secret")).not.toBeInTheDocument();
+    expect(screen.getByText("*".repeat(32))).toBeInTheDocument();
+  });
+
+  it("shows error when reveal invoke fails and stays masked", async () => {
+    const user = userEvent.setup();
+    mockInvoke.mockRejectedValue(new Error("native dialog unavailable"));
+
+    render(<SecretDetail path="misc/key" onDeleted={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Reveal" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Error: native dialog unavailable")
+      ).toBeInTheDocument()
+    );
+    expect(screen.getByText("*".repeat(32))).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reveal" })).toBeInTheDocument();
+  });
+
+  it("does not call get_secret on mount or copy", async () => {
     const user = userEvent.setup();
     mockInvoke.mockResolvedValue(undefined);
 
@@ -79,7 +119,10 @@ describe("SecretDetail", () => {
       "get_secret",
       expect.anything()
     );
-    expect(mockInvoke.mock.calls).toHaveLength(1);
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "reveal_secret",
+      expect.anything()
+    );
   });
 
   it("shows error when copy_secret fails", async () => {
