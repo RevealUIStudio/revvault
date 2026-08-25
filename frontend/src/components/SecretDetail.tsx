@@ -1,5 +1,5 @@
 import { Button } from "@revealui/presentation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface SecretDetailProps {
@@ -7,34 +7,14 @@ interface SecretDetailProps {
   onDeleted: () => void;
 }
 
-const REVEAL_TTL_MS = 15_000;
-
 export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
-  const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const revealEl = useRef<HTMLPreElement>(null);
-  const revealTimer = useRef<number | null>(null);
-
-  function clearReveal() {
-    if (revealEl.current) {
-      revealEl.current.textContent = "";
-    }
-    if (revealTimer.current !== null) {
-      window.clearTimeout(revealTimer.current);
-      revealTimer.current = null;
-    }
-    setRevealed(false);
-  }
 
   useEffect(() => {
-    clearReveal();
     setCopied(false);
     setError(null);
   }, [path]);
-
-  useEffect(() => () => clearReveal(), []);
 
   if (!path) {
     return (
@@ -42,31 +22,6 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
         Select a secret to view details
       </div>
     );
-  }
-
-  async function handleReveal() {
-    if (revealed) {
-      clearReveal();
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    try {
-      // Short-lived display only — never stored in React state.
-      const result = await invoke<string>("get_secret", { path });
-      if (revealEl.current) {
-        revealEl.current.textContent = result;
-      }
-      setRevealed(true);
-      revealTimer.current = window.setTimeout(() => {
-        clearReveal();
-      }, REVEAL_TTL_MS);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
   }
 
   async function handleCopy() {
@@ -101,17 +56,14 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
       </div>
 
       <div className="mb-4 rounded-md border border-neutral-700 bg-neutral-900 p-4">
-        <pre
-          ref={revealEl}
-          className={`whitespace-pre-wrap break-all font-mono text-sm text-neutral-200 ${
-            revealed ? "" : "hidden"
-          }`}
-        />
-        {!revealed && (
-          <div className="font-mono text-sm text-neutral-600">
-            {"*".repeat(32)}
-          </div>
-        )}
+        <div className="font-mono text-sm text-neutral-600">
+          {"*".repeat(32)}
+        </div>
+        <p className="mt-3 text-sm text-neutral-500">
+          Value stays in native code. Use Copy to place it on the clipboard
+          (clears after 45s), or <code className="font-mono">revvault get</code>{" "}
+          in a vault-private terminal.
+        </p>
       </div>
 
       {error && (
@@ -121,17 +73,6 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
       )}
 
       <div className="flex gap-2">
-        <Button
-          type="button"
-          variant="neutral"
-          appearance="solid"
-          onClick={handleReveal}
-          disabled={loading}
-          isLoading={loading}
-        >
-          {revealed ? "Hide" : "Reveal"}
-        </Button>
-
         <Button type="button" variant="brand" appearance="solid" onClick={handleCopy}>
           {copied ? "Copied!" : "Copy"}
         </Button>
