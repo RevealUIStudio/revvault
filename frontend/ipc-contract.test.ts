@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, "../..");
+const repoRoot = resolve(here, "..");
 const tauriLib = readFileSync(
   join(repoRoot, "crates/tauri-app/src/lib.rs"),
   "utf8"
@@ -16,7 +16,11 @@ function walkTsFiles(dir: string): string[] {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) {
       out.push(...walkTsFiles(full));
-    } else if (/\.(ts|tsx)$/.test(name) && !name.endsWith(".test.ts") && !name.endsWith(".test.tsx")) {
+    } else if (
+      /\.(ts|tsx)$/.test(name) &&
+      !name.endsWith(".test.ts") &&
+      !name.endsWith(".test.tsx")
+    ) {
       out.push(full);
     }
   }
@@ -42,7 +46,7 @@ describe("desktop IPC contract", () => {
   });
 
   it("frontend source never invokes get_secret", () => {
-    const files = walkTsFiles(here);
+    const files = walkTsFiles(join(here, "src"));
     const hits = files.filter((file) =>
       readFileSync(file, "utf8").includes("get_secret")
     );
