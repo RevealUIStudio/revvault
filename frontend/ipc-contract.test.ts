@@ -27,6 +27,29 @@ function walkTsFiles(dir: string): string[] {
   return out;
 }
 
+function commandSignature(src: string, name: string): string {
+  const after = src.split(`fn ${name}`).at(1);
+  expect(after, `${name} must be defined`).toBeDefined();
+  return after!.split("{")[0];
+}
+
+function tauriCommandSignatures(src: string): string[] {
+  const out: string[] = [];
+  let rest = src;
+  const marker = "#[tauri::command]";
+  while (rest.includes(marker)) {
+    rest = rest.slice(rest.indexOf(marker) + marker.length);
+    const fnIdx = rest.search(/\bfn\s+/);
+    if (fnIdx < 0) break;
+    const fromFn = rest.slice(fnIdx);
+    const end = fromFn.indexOf("{");
+    if (end < 0) break;
+    out.push(fromFn.slice(0, end));
+    rest = fromFn.slice(end + 1);
+  }
+  return out;
+}
+
 describe("desktop IPC contract", () => {
   it("does not define or register get_secret", () => {
     expect(tauriLib).not.toMatch(/\bfn get_secret\b/);
@@ -37,11 +60,24 @@ describe("desktop IPC contract", () => {
     expect(tauriLib).not.toContain("Ok(secret.expose_secret().to_string())");
   });
 
+  it("no tauri command returns a String Ok payload", () => {
+    const leaked = tauriCommandSignatures(tauriLib).filter((sig) =>
+      /Result\s*<\s*String\b/.test(sig)
+    );
+    expect(leaked).toEqual([]);
+  });
+
+  it("keeps reveal_secret as a unit-returning native command", () => {
+    expect(commandSignature(tauriLib, "reveal_secret")).toContain(
+      "Result<(), String>"
+    );
+    expect(tauriLib).toMatch(/\breveal_secret,/);
+  });
+
   it("keeps copy_secret as a unit-returning native command", () => {
-    expect(tauriLib).toMatch(/\bfn copy_secret\b/);
-    const after = tauriLib.split("fn copy_secret")[1];
-    const signature = after.split("{")[0];
-    expect(signature).toContain("Result<(), String>");
+    expect(commandSignature(tauriLib, "copy_secret")).toContain(
+      "Result<(), String>"
+    );
     expect(tauriLib).toMatch(/\bcopy_secret,/);
   });
 

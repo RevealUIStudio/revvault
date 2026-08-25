@@ -7,7 +7,8 @@ use arboard::Clipboard;
 use revvault_core::init::{init_vault, InitOptions};
 use revvault_core::rotation::{executor, RotationConfig};
 use secrecy::ExposeSecret;
-use tauri::State;
+use tauri::{State, WebviewWindow};
+use zeroize::Zeroizing;
 
 use state::AppState;
 
@@ -29,6 +30,53 @@ fn list_secrets(state: State<AppState>, prefix: Option<String>) -> Result<Vec<Se
             namespace: e.namespace.to_string(),
         })
         .collect())
+}
+
+/// Fail closed before decrypting when a native dialog cannot be presented.
+fn ensure_native_dialog_available() -> Result<(), String> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return Err("native dialog unavailable (no DISPLAY or WAYLAND_DISPLAY)".into());
+        }
+    }
+    Ok(())
+}
+
+/// Show a vault secret in a native OS dialog owned by Rust.
+///
+/// The plaintext never crosses Tauri IPC. A compromised webview therefore
+/// cannot read the value from the command return. Prefer [`copy_secret`]
+/// when the operator only needs the clipboard.
+///
+/// The OS dialog text is visible to the seated operator and to anything that
+/// can capture that window. Availability is checked before decrypt.
+#[tauri::command]
+fn reveal_secret(
+    window: WebviewWindow,
+    state: State<AppState>,
+    path: String,
+) -> Result<(), String> {
+    ensure_native_dialog_available()?;
+    let value = read_secret(&state, &path)?;
+    let title = format!("Secret: {path}");
+    let parent = window.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    window
+        .run_on_main_thread(move || {
+            let result = rfd::MessageDialog::new()
+                .set_title(&title)
+                .set_description(value.as_str())
+                .set_buttons(rfd::MessageButtons::Ok)
+                .set_parent(&parent)
+                .show();
+            let _ = tx.send(result);
+        })
+        .map_err(|e| e.to_string())?;
+    match rx.recv().map_err(|e| e.to_string())? {
+        rfd::MessageDialogResult::Ok => Ok(()),
+        other => Err(format!("native dialog did not complete: {other}")),
+    }
 }
 
 #[tauri::command]
@@ -86,20 +134,24 @@ fn init_vault_cmd() -> Result<InitSummary, String> {
     })
 }
 
+fn read_secret(state: &AppState, path: &str) -> Result<Zeroizing<String>, String> {
+    let guard = state.store.lock().map_err(|e| e.to_string())?;
+    let store = guard.as_ref().ok_or("Store not initialized")?;
+    let secret = store.get(path).map_err(|e| e.to_string())?;
+    Ok(Zeroizing::new(secret.expose_secret().to_string()))
+}
+
 /// Copy a vault secret to the clipboard without sending the value to JS.
 ///
 /// Auto-clears after 45 seconds if the clipboard still holds this value.
 #[tauri::command]
 fn copy_secret(state: State<AppState>, path: String) -> Result<(), String> {
-    let value = {
-        let guard = state.store.lock().map_err(|e| e.to_string())?;
-        let store = guard.as_ref().ok_or("Store not initialized")?;
-        let secret = store.get(&path).map_err(|e| e.to_string())?;
-        secret.expose_secret().to_string()
-    };
+    let value = read_secret(&state, &path)?;
 
     let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-    clipboard.set_text(&value).map_err(|e| e.to_string())?;
+    clipboard
+        .set_text(value.as_str())
+        .map_err(|e| e.to_string())?;
 
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(45));
@@ -187,6 +239,7 @@ pub fn run() {
             init_store,
             init_vault_cmd,
             list_secrets,
+            reveal_secret,
             set_secret,
             delete_secret,
             search_secrets,
@@ -196,4 +249,29 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_secret_errors_when_store_uninitialized() {
+        let state = AppState::new();
+        let err = read_secret(&state, "misc/token").unwrap_err();
+        assert_eq!(err, "Store not initialized");
+    }
+
+    #[test]
+    fn native_dialog_fails_closed_without_display_on_linux() {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            if std::env::var_os("DISPLAY").is_none()
+                && std::env::var_os("WAYLAND_DISPLAY").is_none()
+            {
+                let err = ensure_native_dialog_available().unwrap_err();
+                assert!(err.contains("native dialog unavailable"));
+            }
+        }
+    }
 }

@@ -1,5 +1,5 @@
 import { Button } from "@revealui/presentation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface SecretDetailProps {
@@ -8,13 +8,32 @@ interface SecretDetailProps {
 }
 
 export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
+  const [shown, setShown] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const shownTimer = useRef<number | null>(null);
+  const copiedTimer = useRef<number | null>(null);
+
+  function clearTimers() {
+    if (shownTimer.current !== null) {
+      window.clearTimeout(shownTimer.current);
+      shownTimer.current = null;
+    }
+    if (copiedTimer.current !== null) {
+      window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = null;
+    }
+  }
 
   useEffect(() => {
+    clearTimers();
+    setShown(false);
     setCopied(false);
     setError(null);
   }, [path]);
+
+  useEffect(() => () => clearTimers(), []);
 
   if (!path) {
     return (
@@ -24,12 +43,39 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
     );
   }
 
+  async function handleReveal() {
+    setLoading(true);
+    setError(null);
+    try {
+      // Native dialog in Rust. The command returns unit; JS never sees the value.
+      await invoke("reveal_secret", { path });
+      setShown(true);
+      if (shownTimer.current !== null) {
+        window.clearTimeout(shownTimer.current);
+      }
+      shownTimer.current = window.setTimeout(() => {
+        setShown(false);
+        shownTimer.current = null;
+      }, 2000);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleCopy() {
     setError(null);
     try {
       await invoke("copy_secret", { path });
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copiedTimer.current !== null) {
+        window.clearTimeout(copiedTimer.current);
+      }
+      copiedTimer.current = window.setTimeout(() => {
+        setCopied(false);
+        copiedTimer.current = null;
+      }, 2000);
     } catch (e) {
       setError(String(e));
     }
@@ -60,9 +106,8 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
           {"*".repeat(32)}
         </div>
         <p className="mt-3 text-sm text-neutral-500">
-          Value stays in native code. Use Copy to place it on the clipboard
-          (clears after 45s), or <code className="font-mono">revvault get</code>{" "}
-          in a vault-private terminal.
+          Value stays masked in the webview. Reveal opens a system dialog.
+          Copy stays in native code.
         </p>
       </div>
 
@@ -73,6 +118,17 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
       )}
 
       <div className="flex gap-2">
+        <Button
+          type="button"
+          variant="neutral"
+          appearance="solid"
+          onClick={handleReveal}
+          disabled={loading}
+          isLoading={loading}
+        >
+          {shown ? "Shown" : "Reveal"}
+        </Button>
+
         <Button type="button" variant="brand" appearance="solid" onClick={handleCopy}>
           {copied ? "Copied!" : "Copy"}
         </Button>
