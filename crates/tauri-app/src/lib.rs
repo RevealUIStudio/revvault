@@ -31,19 +31,6 @@ fn list_secrets(state: State<AppState>, prefix: Option<String>) -> Result<Vec<Se
         .collect())
 }
 
-/// Ephemeral reveal for a short-lived frontend display.
-///
-/// Callers must not persist the return value in React state or any other
-/// long-lived JS heap slot. Prefer [`copy_secret`] when the operator only
-/// needs the clipboard.
-#[tauri::command]
-fn get_secret(state: State<AppState>, path: String) -> Result<String, String> {
-    let guard = state.store.lock().map_err(|e| e.to_string())?;
-    let store = guard.as_ref().ok_or("Store not initialized")?;
-    let secret = store.get(&path).map_err(|e| e.to_string())?;
-    Ok(secret.expose_secret().to_string())
-}
-
 #[tauri::command]
 fn set_secret(
     state: State<AppState>,
@@ -200,7 +187,6 @@ pub fn run() {
             init_store,
             init_vault_cmd,
             list_secrets,
-            get_secret,
             set_secret,
             delete_secret,
             search_secrets,
