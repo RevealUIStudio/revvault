@@ -32,14 +32,17 @@ describe("SecretDetail", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows masked value before reveal", () => {
+  it("shows a masked value and a Reveal control that never writes IPC into the DOM", () => {
     render(<SecretDetail path="misc/token" onDeleted={vi.fn()} />);
     expect(screen.getByText("*".repeat(32))).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reveal" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Hide" })).not.toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it("calls invoke('get_secret') and shows value on Reveal click", async () => {
+  it("reveals via reveal_secret(path) without writing a value into the DOM", async () => {
     const user = userEvent.setup();
+    // Even if a buggy backend returned a string, the UI must not display it.
     mockInvoke.mockResolvedValue("sk_live_secret");
 
     render(<SecretDetail path="credentials/stripe/key" onDeleted={vi.fn()} />);
@@ -47,48 +50,56 @@ describe("SecretDetail", () => {
     await user.click(screen.getByRole("button", { name: "Reveal" }));
 
     await waitFor(() =>
-      expect(screen.getByText("sk_live_secret")).toBeInTheDocument()
+      expect(screen.getByRole("button", { name: "Shown" })).toBeInTheDocument()
     );
-    expect(mockInvoke).toHaveBeenCalledWith("get_secret", {
+    expect(mockInvoke).toHaveBeenCalledWith("reveal_secret", {
       path: "credentials/stripe/key",
     });
-    expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument();
-  });
-
-  it("hides value again when Hide is clicked", async () => {
-    const user = userEvent.setup();
-    mockInvoke.mockResolvedValue("my-secret");
-
-    render(<SecretDetail path="misc/pw" onDeleted={vi.fn()} />);
-
-    await user.click(screen.getByRole("button", { name: "Reveal" }));
-    await screen.findByText("my-secret");
-
-    await user.click(screen.getByRole("button", { name: "Hide" }));
-
-    expect(screen.queryByText("my-secret")).not.toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "get_secret",
+      expect.anything()
+    );
+    expect(screen.queryByText("sk_live_secret")).not.toBeInTheDocument();
     expect(screen.getByText("*".repeat(32))).toBeInTheDocument();
   });
 
-  it("shows error when reveal invoke fails", async () => {
+  it("shows error when reveal invoke fails and stays masked", async () => {
     const user = userEvent.setup();
-    mockInvoke.mockRejectedValue(new Error("decryption failed"));
+    mockInvoke.mockRejectedValue(new Error("native dialog unavailable"));
 
     render(<SecretDetail path="misc/key" onDeleted={vi.fn()} />);
 
     await user.click(screen.getByRole("button", { name: "Reveal" }));
 
     await waitFor(() =>
-      expect(screen.getByText("Error: decryption failed")).toBeInTheDocument()
+      expect(
+        screen.getByText("Error: native dialog unavailable")
+      ).toBeInTheDocument()
     );
+    expect(screen.getByText("*".repeat(32))).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reveal" })).toBeInTheDocument();
   });
 
-  it("shows 'Copied!' after successful copy", async () => {
+  it("does not call get_secret on mount or copy", async () => {
     const user = userEvent.setup();
-    // First call (get_secret) returns the value; second (copy_to_clipboard) resolves
-    mockInvoke
-      .mockResolvedValueOnce("the-secret")
-      .mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValue(undefined);
+
+    render(<SecretDetail path="credentials/stripe/key" onDeleted={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "get_secret",
+      expect.anything()
+    );
+    expect(
+      mockInvoke.mock.calls.some(([cmd]) => cmd === "get_secret")
+    ).toBe(false);
+  });
+
+  it("copies via copy_secret(path) without sending the value through JS", async () => {
+    const user = userEvent.setup();
+    mockInvoke.mockResolvedValue(undefined);
 
     render(<SecretDetail path="misc/token" onDeleted={vi.fn()} />);
 
@@ -96,6 +107,36 @@ describe("SecretDetail", () => {
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Copied!" })).toBeInTheDocument()
+    );
+    expect(mockInvoke).toHaveBeenCalledWith("copy_secret", {
+      path: "misc/token",
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "copy_to_clipboard",
+      expect.anything()
+    );
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "get_secret",
+      expect.anything()
+    );
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "reveal_secret",
+      expect.anything()
+    );
+  });
+
+  it("shows error when copy_secret fails", async () => {
+    const user = userEvent.setup();
+    mockInvoke.mockRejectedValue(new Error("clipboard unavailable"));
+
+    render(<SecretDetail path="misc/key" onDeleted={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Error: clipboard unavailable")
+      ).toBeInTheDocument()
     );
   });
 

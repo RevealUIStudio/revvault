@@ -1,3 +1,5 @@
+import { Button } from "@revealui/presentation";
+
 interface SidebarProps {
   namespaces: string[];
   active: string | null;
@@ -18,41 +20,44 @@ export function Sidebar({
       <div className="p-3 text-xs font-semibold uppercase tracking-wider text-neutral-500">
         Namespaces
       </div>
-      <button
+      <Button
+        type="button"
+        variant="neutral"
+        appearance="ghost"
         onClick={() => onSelect(null)}
-        className={`px-3 py-2 text-left text-sm transition-colors ${
-          active === null && !showRotation
-            ? "bg-neutral-800 text-blue-400"
-            : "text-neutral-300 hover:bg-neutral-800"
+        className={`justify-start rounded-none px-3 py-2 ${
+          active === null && !showRotation ? "bg-neutral-800 text-blue-400" : "text-neutral-300"
         }`}
       >
         All
-      </button>
+      </Button>
       {namespaces.map((ns) => (
-        <button
+        <Button
           key={ns}
+          type="button"
+          variant="neutral"
+          appearance="ghost"
           onClick={() => onSelect(ns)}
-          className={`px-3 py-2 text-left text-sm transition-colors ${
-            active === ns && !showRotation
-              ? "bg-neutral-800 text-blue-400"
-              : "text-neutral-300 hover:bg-neutral-800"
+          className={`justify-start rounded-none px-3 py-2 ${
+            active === ns && !showRotation ? "bg-neutral-800 text-blue-400" : "text-neutral-300"
           }`}
         >
           {ns}
-        </button>
+        </Button>
       ))}
 
       <div className="mt-auto border-t border-neutral-800 pt-1">
-        <button
+        <Button
+          type="button"
+          variant="neutral"
+          appearance="ghost"
           onClick={onRotationToggle}
-          className={`w-full px-3 py-2 text-left text-sm transition-colors ${
-            showRotation
-              ? "bg-neutral-800 text-blue-400"
-              : "text-neutral-300 hover:bg-neutral-800"
+          className={`w-full justify-start rounded-none px-3 py-2 ${
+            showRotation ? "bg-neutral-800 text-blue-400" : "text-neutral-300"
           }`}
         >
           ↻ Rotation
-        </button>
+        </Button>
       </div>
     </div>
   );

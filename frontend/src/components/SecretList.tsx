@@ -1,3 +1,4 @@
+import { Button } from "@revealui/presentation";
 import type { SecretInfo } from "../types";
 
 interface SecretListProps {
@@ -18,13 +19,14 @@ export function SecretList({ secrets, selected, onSelect }: SecretListProps) {
   return (
     <div className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-neutral-800">
       {secrets.map((secret) => (
-        <button
+        <Button
           key={secret.path}
+          type="button"
+          variant="neutral"
+          appearance="ghost"
           onClick={() => onSelect(secret.path)}
-          className={`border-b border-neutral-800 px-4 py-3 text-left transition-colors ${
-            selected === secret.path
-              ? "bg-neutral-800"
-              : "hover:bg-neutral-800/50"
+          className={`h-auto flex-col items-start rounded-none border-b border-neutral-800 px-4 py-3 ${
+            selected === secret.path ? "bg-neutral-800" : ""
           }`}
         >
           <div className="truncate text-sm font-medium text-neutral-200">
@@ -33,7 +35,7 @@ export function SecretList({ secrets, selected, onSelect }: SecretListProps) {
           <div className="mt-0.5 truncate text-xs text-neutral-500">
             {secret.path}
           </div>
-        </button>
+        </Button>
       ))}
     </div>
   );

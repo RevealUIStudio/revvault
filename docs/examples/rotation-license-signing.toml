@@ -1,16 +1,23 @@
 # Example crown-jewel rotation.toml block for the license signing keypair
 # (GAP-261 residual). Copy into `<store>/.revvault/rotation.toml` — do NOT
-# commit live store config. Operator-gated: dual-slot rotate never overwrites
-# the live leaf; promote flips next → live after verify soak.
+# commit live store config. That copy is an **owner** store edit; no PR
+# mutates `~/.revealui/passage-store/.revvault/rotation.toml`.
+#
+# Operator-gated: dual-slot rotate never overwrites the live leaf; promote
+# flips next → live after verify soak.
 #
 #   revvault rotate license-signing --dry-run
 #   revvault rotate license-signing
+#   # strict post-rotate gate (same as verify= below):
+#   revvault rotation-verify license-signing
 #   # soak: NEXT kid verifies in prod (GAP-259 multi-key) + remote readback
 #   revvault rotation-promote license-signing
 #
 # Customer re-mint (forge/customers/*/license-key) is NOT performed by promote.
 # Keep post_rotate pointing at the existing revforge script until a later
 # promote-subsume PR lands, or run it manually after promote.
+#
+# Runbook: docs/rotation-dual-slot-verify.md
 
 [providers.license-signing]
 secret_path = "revdev/license-signing-private-key"
@@ -20,9 +27,10 @@ require_verify = true
 sync_must_succeed = true
 output_shape = "pem-private-key"
 
-# Strict post-rotate gate (operator-defined). Example: export next public key
-# and assert computeKeyId matches the kid stored at *-next-id.
-verify = "test -n \"$(revvault get revdev/license-signing-private-key-next-id 2>/dev/null)\""
+# Strict post-rotate gate: read-only dual-slot checks (next-id + next public
+# presence, computeKeyId match). Prints kids/paths only — never PEMs or
+# private keys. Does not promote or rotate. See rotation-dual-slot-verify.md.
+verify = "revvault rotation-verify license-signing"
 
 [providers.license-signing.settings]
 type = "ed25519-keypair"

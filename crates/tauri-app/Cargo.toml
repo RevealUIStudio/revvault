@@ -27,3 +27,5 @@ serde_json = { workspace = true }
 arboard = { workspace = true }
 secrecy = { workspace = true }
 anyhow = { workspace = true }
+rfd = "0.15"
+zeroize = { workspace = true }

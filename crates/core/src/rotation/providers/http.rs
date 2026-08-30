@@ -24,7 +24,7 @@
 //! | `create_url` | yes | — | Endpoint to POST (or PUT) for a new key |
 //! | `response_field` | yes | — | Dot-path into JSON response to extract new key value (`"token"`, `"data.key"`) |
 //! | `id_field` | no | — | Dot-path to extract new key ID for future revocations (`"id"`, `"tokenId"`) |
-//! | `revoke_url` | no | — | Endpoint to revoke old key; supports `{old_key}` and `{old_key_id}` |
+//! | `revoke_url` | no | — | Endpoint to revoke old key; supports `{old_key_id}` only (never `{old_key}`) |
 //! | `revoke_method` | no | `DELETE` | HTTP verb for revoke (`DELETE` \| `POST`) |
 //! | `create_method` | no | `POST` | HTTP verb for create (`POST` \| `PUT`) |
 //! | `create_body` | no | `{}` | JSON body for create; `{current_key}` is substituted |
@@ -89,6 +89,16 @@ impl GenericHttpProvider {
 
         let create_url = require("create_url")?;
         let response_field = require("response_field")?;
+
+        if let Some(url) = settings.get("revoke_url") {
+            if revoke_url_embeds_raw_old_key(url) {
+                return Err(RevvaultError::Other(anyhow::anyhow!(
+                    "provider '{}': revoke_url must not interpolate {{old_key}} \
+                     (raw key in URL). Use {{old_key_id}}",
+                    name
+                )));
+            }
+        }
 
         let auth_type = match settings.get("auth_type").map(String::as_str) {
             Some("header") => AuthType::Header,
@@ -168,9 +178,7 @@ impl RotationProvider for GenericHttpProvider {
         })?;
 
         if let Some(ref url_template) = self.revoke_url {
-            let url_clean = url_template
-                .replace("{old_key}", "placeholder")
-                .replace("{old_key_id}", "placeholder");
+            let url_clean = url_template.replace("{old_key_id}", "placeholder");
             reqwest::Url::parse(&url_clean).map_err(|e| {
                 RevvaultError::Other(anyhow::anyhow!(
                     "provider '{}': invalid revoke_url '{}': {e}",
@@ -186,7 +194,7 @@ impl RotationProvider for GenericHttpProvider {
     async fn dry_run(&self) -> Result<String> {
         let body = self.create_body.replace("{current_key}", "[current_key]");
         let mut steps = vec![
-            format!("1. Read current key from vault (already loaded)"),
+            "1. Read current key from vault (already loaded)".to_string(),
             format!(
                 "2. {} {} with body: {}",
                 self.create_method, self.create_url, body
@@ -279,35 +287,52 @@ impl RotationProvider for GenericHttpProvider {
             })
         });
 
-        // --- Step 2: Revoke old key ---
-        if let Some(ref url_template) = self.revoke_url {
-            // Substitute {old_key} with the key value, {old_key_id} with the stored ID.
-            let url = url_template
-                .replace("{old_key}", self.current_key.expose_secret())
-                .replace("{old_key_id}", self.old_key_id.as_deref().unwrap_or(""));
-
-            let revoke_req = match self.revoke_method.to_uppercase().as_str() {
-                "DELETE" => client.delete(&url),
-                "POST" => client.post(&url),
-                "PUT" => client.put(&url),
-                m => {
-                    return Err(self.rotation_failed(format!("unsupported revoke_method: {m}")));
-                }
-            };
-
-            let resp = self
-                .apply_auth(revoke_req)
-                .send()
-                .await
-                .map_err(|e| self.rotation_failed(format!("revoke request failed: {e}")))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                return Err(self.rotation_failed(format!("revoke returned {status}: {text}")));
-            }
-        }
-
         Ok(RotationOutcome::single(new_value, new_key_id))
     }
+
+    async fn revoke_previous(&self) -> Result<()> {
+        let Some(ref url_template) = self.revoke_url else {
+            return Ok(());
+        };
+
+        if revoke_url_embeds_raw_old_key(url_template) {
+            return Err(self.rotation_failed(
+                "revoke_url must not interpolate {old_key} (raw key in URL). Use {old_key_id}",
+            ));
+        }
+
+        let client = Client::new();
+        // {old_key_id} is an opaque identifier, not the secret value.
+        let url = url_template.replace("{old_key_id}", self.old_key_id.as_deref().unwrap_or(""));
+
+        let revoke_req = match self.revoke_method.to_uppercase().as_str() {
+            "DELETE" => client.delete(&url),
+            "POST" => client.post(&url),
+            "PUT" => client.put(&url),
+            m => {
+                return Err(self.rotation_failed(format!("unsupported revoke_method: {m}")));
+            }
+        };
+
+        let resp = self
+            .apply_auth(revoke_req)
+            .send()
+            .await
+            .map_err(|e| self.rotation_failed(format!("revoke request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(self.rotation_failed(format!("revoke returned {status}: {text}")));
+        }
+
+        Ok(())
+    }
+}
+
+/// True when `revoke_url` would put the raw key value into the request URL.
+/// `{old_key_id}` is allowed; `{old_key}` is not (`{old_key}` is a prefix of
+/// `{old_key_id}`, so strip the id placeholder first).
+fn revoke_url_embeds_raw_old_key(url: &str) -> bool {
+    url.replace("{old_key_id}", "").contains("{old_key}")
 }

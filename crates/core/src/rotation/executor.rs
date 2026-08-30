@@ -24,6 +24,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use crate::rotation::config::ProviderConfig;
 use crate::rotation::provider::RotationLogEntry;
 use crate::rotation::providers::build_provider;
+use crate::rotation::providers::keypair::compute_key_id;
 use crate::rotation::slots;
 use crate::rotation::sync_hook::{self, SyncLogEntry};
 use crate::store::PassageStore;
@@ -41,13 +42,14 @@ fn key_id_path(secret_path: &str) -> String {
 /// 1. Read current key from vault
 /// 2. Read previous key ID from vault (if stored)
 /// 3. Build and preflight the provider (factory in `providers::build_provider`)
-/// 4. Execute rotation (create new key, revoke old key)
+/// 4. Execute rotation (create new key only — no revoke yet)
 /// 5. Write new key to vault
 /// 6. Write new key ID to vault (if provider returned one)
-/// 7. Apply post-rotation sync hook (if `[sync.*]` configured)
-/// 8. Run `post_rotate` user hooks (warn-on-failure)
-/// 9. Run `verify` gate (strict — Err on failure)
-/// 10. Append log entry
+/// 7. Revoke the previous key (skipped for dual-slot; live stays valid)
+/// 8. Apply post-rotation sync hook (if `[sync.*]` configured)
+/// 9. Run `post_rotate` user hooks (warn-on-failure)
+/// 10. Run `verify` gate (strict — Err on failure)
+/// 11. Append log entry
 pub async fn execute(
     store: &PassageStore,
     provider_name: &str,
@@ -148,7 +150,14 @@ pub async fn execute(
             .upsert(&kid_write, id.as_bytes())
             .map_err(|e| anyhow::anyhow!("cannot write key ID to vault: {e}"))?;
     }
-    // 7. Post-rotation sync hook. The vault is already on the
+
+    // 7. Revoke the previous key only after the new value is in the vault.
+    // Dual-slot keeps live unchanged, so revoking here would lock out the live key.
+    if !provider_config.dual_slot {
+        provider.revoke_previous().await?;
+    }
+
+    // 8. Post-rotation sync hook. The vault is already on the
     // new value at this point (live or dual-slot next); sync is best-effort
     // by default and infallible at the function level (failures land as log
     // entries). When `sync_must_succeed` is set (crown jewels, GAP-261), any
@@ -194,7 +203,7 @@ pub async fn execute(
         None
     };
 
-    // 8. post_rotate user hooks (warn-on-failure)
+    // 9. post_rotate user hooks (warn-on-failure)
     for cmd in &provider_config.post_rotate {
         eprintln!("  Running post_rotate: {cmd}");
         match tokio::process::Command::new("sh")
@@ -219,7 +228,7 @@ pub async fn execute(
         }
     }
 
-    // 9. verify gate (STRICT — Err on failure)
+    // 10. verify gate (STRICT — Err on failure)
     let verified: Option<bool> = match &provider_config.verify {
         None => None,
         Some(verify_cmd) => {
@@ -278,7 +287,7 @@ pub async fn execute(
         }
     };
 
-    // 10. Append log entry (success path)
+    // 11. Append log entry (success path)
     append_log(
         store,
         provider_name,
@@ -368,6 +377,89 @@ pub fn promote(
     )?;
 
     eprintln!("✓ Promoted dual-slot provider '{provider_name}' to live paths");
+    Ok(())
+}
+
+/// Read-only dual-slot next-leaf checks for crown-jewel keypair providers (GAP-261).
+///
+/// Does **not** rotate, promote, or mutate the vault. Never prints PEM or private
+/// material — only path presence and key ids (kids).
+///
+/// Checks (fail closed, non-zero via `Err`):
+/// 1. `dual_slot = true`
+/// 2. `{secret_path}-next-id` present and non-empty
+/// 3. `public_key_path` configured and `{public_key_path}-next` present
+/// 4. `computeKeyId(next public PEM)` equals the stored next-id kid
+///
+/// On success, prints a soak/promote checklist for the operator. Promote still
+/// requires a separate owner `revvault rotation-promote` invocation.
+pub fn verify_dual_slot(
+    store: &PassageStore,
+    provider_name: &str,
+    provider_config: &ProviderConfig,
+) -> anyhow::Result<()> {
+    if !provider_config.dual_slot {
+        return Err(anyhow::anyhow!(
+            "provider '{provider_name}': rotation-verify requires dual_slot=true in rotation.toml"
+        ));
+    }
+
+    let next_id_path = key_id_path(&slots::next_path(&provider_config.secret_path));
+    let next_id_raw = store.get(&next_id_path).map_err(|e| {
+        anyhow::anyhow!("missing next-id leaf '{next_id_path}' (run dual-slot rotate first): {e}")
+    })?;
+    let stored_kid = next_id_raw.expose_secret().trim().to_string();
+    if stored_kid.is_empty() {
+        return Err(anyhow::anyhow!(
+            "next-id leaf '{next_id_path}' is present but empty"
+        ));
+    }
+    eprintln!("  ✓ next-id present at '{next_id_path}' kid={stored_kid}");
+
+    let public_base = provider_config
+        .settings
+        .get("public_key_path")
+        .map(String::as_str)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "provider '{provider_name}': rotation-verify needs settings.public_key_path \
+                 to computeKeyId the next public PEM"
+            )
+        })?;
+    let next_public_path = slots::next_path(public_base);
+    let next_public = store.get(&next_public_path).map_err(|e| {
+        anyhow::anyhow!(
+            "missing next public leaf '{next_public_path}' (run dual-slot rotate first): {e}"
+        )
+    })?;
+    // Presence only in the log line — PEM stays in process memory.
+    eprintln!("  ✓ next public present at '{next_public_path}'");
+
+    let computed = compute_key_id(next_public.expose_secret());
+    if computed != stored_kid {
+        return Err(anyhow::anyhow!(
+            "kid mismatch: computeKeyId(next public)={computed} != stored next-id={stored_kid} \
+             (paths: public='{next_public_path}', id='{next_id_path}')"
+        ));
+    }
+    eprintln!("  ✓ computeKeyId(next public) matches next-id kid={stored_kid}");
+
+    eprintln!();
+    eprintln!("✓ Dual-slot next leaves consistent for provider '{provider_name}'");
+    eprintln!();
+    eprintln!("Operator checklist (this command never promotes or rotates):");
+    eprintln!("  [ ] Soak NEXT kid ({stored_kid}) on hosted multi-key verify (GAP-259)");
+    eprintln!("  [ ] Confirm remote readback if any sync targets applied");
+    eprintln!("  [ ] Owner runs: revvault rotation-promote {provider_name}");
+    eprintln!("      (overwrites the live signing key — not automatic)");
+    eprintln!();
+    eprintln!(
+        "Note: copying docs/examples/rotation-license-signing.toml into \
+         <store>/.revvault/rotation.toml is an owner store edit; this tool \
+         does not mutate rotation.toml."
+    );
+
     Ok(())
 }
 

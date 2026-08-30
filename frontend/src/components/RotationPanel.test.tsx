@@ -18,6 +18,7 @@ const mockProviders = [
 describe("RotationPanel", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
   });
 
   it("renders the heading", () => {
@@ -62,7 +63,26 @@ describe("RotationPanel", () => {
     );
   });
 
-  it("calls rotate_secret with the provider name when Rotate is clicked", async () => {
+  it("does not rotate when confirm is cancelled", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    mockInvoke.mockResolvedValueOnce(mockProviders);
+
+    render(<RotationPanel />);
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Rotate" })).toHaveLength(2)
+    );
+
+    await user.click(screen.getAllByRole("button", { name: "Rotate" })[0]);
+
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "rotate_secret",
+      expect.anything()
+    );
+  });
+
+  it("calls rotate_secret with the provider name when Rotate is confirmed", async () => {
     const user = userEvent.setup();
     mockInvoke
       .mockResolvedValueOnce(mockProviders)  // list_rotation_providers

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { Button } from "@revealui/presentation";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface SecretDetailProps {
@@ -7,18 +8,32 @@ interface SecretDetailProps {
 }
 
 export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
-  const [revealed, setRevealed] = useState(false);
-  const [value, setValue] = useState<string | null>(null);
+  const [shown, setShown] = useState(false);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const shownTimer = useRef<number | null>(null);
+  const copiedTimer = useRef<number | null>(null);
+
+  function clearTimers() {
+    if (shownTimer.current !== null) {
+      window.clearTimeout(shownTimer.current);
+      shownTimer.current = null;
+    }
+    if (copiedTimer.current !== null) {
+      window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = null;
+    }
+  }
 
   useEffect(() => {
-    setRevealed(false);
-    setValue(null);
+    clearTimers();
+    setShown(false);
     setCopied(false);
     setError(null);
   }, [path]);
+
+  useEffect(() => () => clearTimers(), []);
 
   if (!path) {
     return (
@@ -29,18 +44,19 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
   }
 
   async function handleReveal() {
-    if (revealed) {
-      setRevealed(false);
-      setValue(null);
-      return;
-    }
-
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke<string>("get_secret", { path });
-      setValue(result);
-      setRevealed(true);
+      // Native dialog in Rust. The command returns unit; JS never sees the value.
+      await invoke("reveal_secret", { path });
+      setShown(true);
+      if (shownTimer.current !== null) {
+        window.clearTimeout(shownTimer.current);
+      }
+      shownTimer.current = window.setTimeout(() => {
+        setShown(false);
+        shownTimer.current = null;
+      }, 2000);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -51,10 +67,15 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
   async function handleCopy() {
     setError(null);
     try {
-      const secret = value ?? (await invoke<string>("get_secret", { path }));
-      await invoke("copy_to_clipboard", { value: secret });
+      await invoke("copy_secret", { path });
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copiedTimer.current !== null) {
+        window.clearTimeout(copiedTimer.current);
+      }
+      copiedTimer.current = window.setTimeout(() => {
+        setCopied(false);
+        copiedTimer.current = null;
+      }, 2000);
     } catch (e) {
       setError(String(e));
     }
@@ -81,15 +102,13 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
       </div>
 
       <div className="mb-4 rounded-md border border-neutral-700 bg-neutral-900 p-4">
-        {revealed && value ? (
-          <pre className="whitespace-pre-wrap break-all font-mono text-sm text-neutral-200">
-            {value}
-          </pre>
-        ) : (
-          <div className="font-mono text-sm text-neutral-600">
-            {"*".repeat(32)}
-          </div>
-        )}
+        <div className="font-mono text-sm text-neutral-600">
+          {"*".repeat(32)}
+        </div>
+        <p className="mt-3 text-sm text-neutral-500">
+          Value stays masked in the webview. Reveal opens a system dialog.
+          Copy stays in native code.
+        </p>
       </div>
 
       {error && (
@@ -99,27 +118,24 @@ export function SecretDetail({ path, onDeleted }: SecretDetailProps) {
       )}
 
       <div className="flex gap-2">
-        <button
+        <Button
+          type="button"
+          variant="neutral"
+          appearance="solid"
           onClick={handleReveal}
           disabled={loading}
-          className="rounded-md bg-neutral-800 px-4 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-700 disabled:opacity-50"
+          isLoading={loading}
         >
-          {loading ? "Decrypting..." : revealed ? "Hide" : "Reveal"}
-        </button>
+          {shown ? "Shown" : "Reveal"}
+        </Button>
 
-        <button
-          onClick={handleCopy}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500"
-        >
+        <Button type="button" variant="brand" appearance="solid" onClick={handleCopy}>
           {copied ? "Copied!" : "Copy"}
-        </button>
+        </Button>
 
-        <button
-          onClick={handleDelete}
-          className="rounded-md bg-red-900 px-4 py-2 text-sm font-medium text-red-200 transition-colors hover:bg-red-800"
-        >
+        <Button type="button" variant="danger" appearance="solid" onClick={handleDelete}>
           Delete
-        </button>
+        </Button>
       </div>
     </div>
   );
