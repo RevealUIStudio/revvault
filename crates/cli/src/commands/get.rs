@@ -27,7 +27,12 @@ pub struct GetArgs {
 }
 
 /// Print the secret value when `--reveal`/`--full`/`--clip` or stdout is not a TTY.
-pub(crate) fn should_print_value(reveal: bool, full: bool, clip: bool, stdout_is_tty: bool) -> bool {
+pub(crate) fn should_print_value(
+    reveal: bool,
+    full: bool,
+    clip: bool,
+    stdout_is_tty: bool,
+) -> bool {
     reveal || full || clip || !stdout_is_tty
 }
 

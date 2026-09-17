@@ -345,10 +345,7 @@ fn set_value_flag_writes_literal_and_warns() {
 #[test]
 fn list_prefix_long_flag() {
     let (_dir, store, identity) = setup_temp_store();
-    for (path, val) in &[
-        ("credentials/stripe/sk", "sk"),
-        ("ssh/server", "key"),
-    ] {
+    for (path, val) in &[("credentials/stripe/sk", "sk"), ("ssh/server", "key")] {
         revvault_cmd(&store, &identity)
             .arg("set")
             .arg(path)
