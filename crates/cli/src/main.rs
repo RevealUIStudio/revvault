@@ -7,7 +7,10 @@ const AFTER_HELP: &str = "\
 Examples:
   revvault init                                  create the store and age identity
   revvault set revealui/prod/stripe/secret-key   store a secret (hidden prompt)
-  revvault get revealui/prod/stripe/secret-key   decrypt and print a secret
+  revvault get revealui/prod/stripe/secret-key   metadata on a TTY; value when piped
+  revvault get --reveal <path>                   print the value on a TTY
+  revvault list --prefix revealui/prod           filter paths by prefix
+  revvault set <path> --value slug               one-shot set (not for credentials)
   revvault list --tree                           browse the whole store
   revvault export-env revealui/dev/electric      KEY=VALUE lines for shell eval
   revvault run --env KEY=path -- cmd…            secrets in child env only (stream-safe)

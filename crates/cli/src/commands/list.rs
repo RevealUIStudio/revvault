@@ -5,8 +5,12 @@ use serde_json::json;
 
 #[derive(Args)]
 pub struct ListArgs {
-    /// Filter by path prefix
+    /// Filter by path prefix (positional)
     pub prefix: Option<String>,
+
+    /// Filter by path prefix
+    #[arg(long = "prefix")]
+    pub prefix_flag: Option<String>,
 
     /// Show as tree view
     #[arg(short, long)]
@@ -15,7 +19,8 @@ pub struct ListArgs {
 
 pub fn run(args: ListArgs, json_output: bool) -> anyhow::Result<()> {
     let store = super::open_store()?;
-    let entries = store.list(args.prefix.as_deref())?;
+    let prefix = args.prefix_flag.as_deref().or(args.prefix.as_deref());
+    let entries = store.list(prefix)?;
 
     if json_output {
         let items: Vec<serde_json::Value> = entries

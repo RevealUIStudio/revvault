@@ -300,7 +300,70 @@ fn get_missing_path_stderr_names_path() {
         .assert()
         .failure()
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains("no/such/secret"));
+        .stderr(predicate::str::contains("path not found: no/such/secret"));
+}
+
+#[test]
+fn get_reveal_prints_value_when_piped() {
+    let (_dir, store, identity) = setup_temp_store();
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("credentials/test-key")
+        .write_stdin("super-secret-value")
+        .assert()
+        .success();
+
+    revvault_cmd(&store, &identity)
+        .arg("get")
+        .arg("--reveal")
+        .arg("credentials/test-key")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("super-secret-value"));
+}
+
+#[test]
+fn set_value_flag_writes_literal_and_warns() {
+    let (_dir, store, identity) = setup_temp_store();
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("misc/slug")
+        .arg("--value")
+        .arg("not-a-credential")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("shell history"));
+
+    revvault_cmd(&store, &identity)
+        .arg("get")
+        .arg("misc/slug")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not-a-credential"));
+}
+
+#[test]
+fn list_prefix_long_flag() {
+    let (_dir, store, identity) = setup_temp_store();
+    for (path, val) in &[("credentials/stripe/sk", "sk"), ("ssh/server", "key")] {
+        revvault_cmd(&store, &identity)
+            .arg("set")
+            .arg(path)
+            .write_stdin(*val)
+            .assert()
+            .success();
+    }
+
+    revvault_cmd(&store, &identity)
+        .arg("list")
+        .arg("--prefix")
+        .arg("credentials")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("credentials/stripe/sk")
+                .and(predicate::str::contains("ssh/server").not()),
+        );
 }
 
 #[test]
