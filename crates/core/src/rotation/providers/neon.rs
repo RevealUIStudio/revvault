@@ -183,7 +183,7 @@ impl RotationProvider for NeonProvider {
             ))
         })?;
         let conn_url = format!(
-            "{NEON_API}/projects/{}/connection_uri?role_name={}&database_name={}",
+            "{NEON_API}/projects/{}/connection_uri?role_name={}&database_name={}&branch_id={dummy_branch}",
             self.project_id, self.role, self.database
         );
         reqwest::Url::parse(&conn_url).map_err(|e| {
@@ -213,7 +213,7 @@ impl RotationProvider for NeonProvider {
             "4. Validate the response (Neon returns the new password inline,".to_string(),
             "   but we use connection_uri to assemble the full URI atomically)".to_string(),
             format!(
-                "5. GET {NEON_API}/projects/{}/connection_uri?role_name={}&database_name={}&pooled={}",
+                "5. GET {NEON_API}/projects/{}/connection_uri?role_name={}&database_name={}&pooled={}&branch_id=<resolved>",
                 self.project_id, self.role, self.database, self.pooled
             ),
             format!(
@@ -257,8 +257,8 @@ impl RotationProvider for NeonProvider {
 
         // --- Step 2: fetch connection URI (now reflects the new password) ---
         let conn_url = format!(
-            "{NEON_API}/projects/{}/connection_uri?role_name={}&database_name={}&pooled={}",
-            self.project_id, self.role, self.database, self.pooled
+            "{NEON_API}/projects/{}/connection_uri?role_name={}&database_name={}&pooled={}&branch_id={}",
+            self.project_id, self.role, self.database, self.pooled, branch_id
         );
         let resp = client
             .get(&conn_url)
@@ -415,6 +415,7 @@ mod tests {
         let plan = p.dry_run().await.unwrap();
         assert!(plan.contains("reset_password"));
         assert!(plan.contains("connection_uri"));
+        assert!(plan.contains("branch_id=<resolved>"));
         assert!(plan.contains("primary, resolved"));
         assert!(plan.contains("p-test-123"));
         assert!(plan.contains("neondb_owner"));
