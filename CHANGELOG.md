@@ -4,15 +4,27 @@ All notable changes to revvault are documented here. Follows [Keep a Changelog](
 
 ## Unreleased
 
+## [0.5.0] — 2026-09-22
+
+Workspace crates (`revvault-cli`, `revvault-core`, `revvault-tauri`) move
+`0.4.0` → `0.5.0`. The private `revvault-frontend` package moves `0.1.0` →
+`0.2.0` on its own delta (compose presentation for tier-1 hosts, and the
+desktop IPC no longer returns secret plaintext). Those two numbers are not
+meant to match.
+
+### Added
+
+- **CLI confirmations and gates shipped after `0.4.0` (#133, 2026-07-17).**
+  `get --reveal`, `set --value`, and `list --prefix` (GAP-202). `revvault run`
+  plus a stream-safe `get` gate (GAP-468). Dual-slot rotation verify/promote
+  (GAP-261). `sync vercel|fly --project` / `--key` (GAP-339) so one env var
+  can be pushed without rewriting the manifest.
+- **Frontend `0.2.0`.** Compose presentation for tier-1 hosts.
+
 ### Fixed
 
 - **Root `LICENSE` was an FSL-1.1-MIT paste for `@revealui/harnesses`.** Replaced with the MIT license already declared in `Cargo.toml` and the README so GitHub can detect MIT. README path examples that used `revforge/customers/...` are now marked operator/private (RevForge has no public repo).
 - **`h2` 0.4.13 → 0.4.17** (lockfile only): closes `RUSTSEC-2026-0258` (unbounded empty DATA frames). Transitive via `hyper` / `reqwest`; no product-code change.
-
-### Added
-
-- **`sync vercel|fly --project` / `--key`** (GAP-339): scoped dry-run and apply filters so a single env var can be pushed without rewriting the entire manifest surface (license private key blast radius).
-
 
 ## [0.4.0] — 2026-07-17
 
