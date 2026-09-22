@@ -29,7 +29,7 @@ Per the fleet-wide [secrets rule](https://github.com/RevealUIStudio/revealui/blo
 ### Build
 
 ```bash
-cd ~/revfleet/revvault
+cd ~/revealfleet/revvault
 direnv allow  # or: nix develop
 cargo build --workspace
 ```
