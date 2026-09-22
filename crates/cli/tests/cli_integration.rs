@@ -51,6 +51,46 @@ fn bare_invocation_shows_full_help_with_examples() {
 }
 
 #[test]
+fn set_piped_confirmation_reports_trimmed_bytes_and_prefix() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("credentials/test")
+        .write_stdin("rk_live_abc\n")
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("stored 11 bytes at credentials/test (starts: rk_live_)")
+                .and(predicate::str::contains("rk_live_a").not()),
+        );
+
+    revvault_cmd(&store, &identity)
+        .arg("get")
+        .arg("--reveal")
+        .arg("credentials/test")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rk_live_abc"));
+}
+
+#[test]
+fn set_force_confirmation_uses_the_same_line() {
+    let (_dir, store, identity) = setup_temp_store();
+
+    revvault_cmd(&store, &identity)
+        .arg("set")
+        .arg("--force")
+        .arg("credentials/test")
+        .write_stdin("rk_live_abc")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "stored 11 bytes at credentials/test (starts: rk_live_)",
+        ));
+}
+
+#[test]
 fn set_empty_stdin_fails() {
     let (_dir, store, identity) = setup_temp_store();
 

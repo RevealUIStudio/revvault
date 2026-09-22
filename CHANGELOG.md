@@ -4,6 +4,13 @@ All notable changes to revvault are documented here. Follows [Keep a Changelog](
 
 ## Unreleased
 
+### Added
+
+- **`revvault set` confirms the stored length.** Success prints
+  `stored N bytes at <path> (starts: <up to 8 chars>)` on stderr, including
+  when stdin is piped and for `set --force`. `edit` uses the same line.
+  `N` is the exact trimmed byte length. The prefix stops at 8 characters.
+
 ## [0.5.0] — 2026-09-22
 
 Workspace crates (`revvault-cli`, `revvault-core`, `revvault-tauri`) move
