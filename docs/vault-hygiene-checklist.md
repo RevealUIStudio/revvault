@@ -1,10 +1,20 @@
 # Vault hygiene marks (GAP-263)
 
-Annotated inventory of vault paths and namespaces already described in this repo. Each item is marked from in-repo evidence only.
+Annotated inventory of vault paths and namespaces already described in this repo. Each item is marked from in-repo evidence. An owner ruling below overrides an earlier proposal.
 
-This document does not delete, move, or rewrite vault entries. A **RETIRE** mark is a proposal. Joshua must approve that item before any vault delete. A **CONSOLIDATE** mark names the target path. It is not permission to move a leaf.
+This document does not delete, move, or rewrite vault entries. A **RETIRE** mark is a proposal until an owner ruling records **RETIRE APPROVED**. Approval is still not permission to delete a leaf. Deletes wait for a later execute-approved step, with Joshua OK per item if needed. A **CONSOLIDATE** mark names the target path. It is not permission to move a leaf.
 
 Test-only paths (`misc/empty`, `credentials/test-key`, and the other fixtures under `crates/cli/tests/` and `crates/core/tests/`) are not store leaves and are not items below.
+
+## Owner rulings
+
+### 2026-09-23
+
+Joshua:
+
+- `credentials/resend/*` — **RETIRE APPROVED** (2026-09-23). Do not delete `.age` files or vault entries in this change.
+- leftover `revealcoin/*` — **RETIRE APPROVED** (2026-09-23). Do not delete `.age` files or vault entries in this change.
+- `credentials/huggingface/*` — **KEEP**. Do not retire.
 
 ## Sources
 
@@ -22,7 +32,7 @@ Test-only paths (`misc/empty`, `credentials/test-key`, and the other fixtures un
 
 ## KEEP
 
-These are the current contract. Code still resolves them, or the canonical docs name them with no in-repo removal note.
+These are the current contract. Code still resolves them, the canonical docs name them with no in-repo removal note, or an owner ruling says KEEP.
 
 | Item | Rationale |
 |---|---|
@@ -47,6 +57,7 @@ These are the current contract. Code still resolves them, or the canonical docs 
 | `credentials/github/personal-token` | README canonical example under `credentials/<system>/<name>`. |
 | `credentials/anthropic/api-key` | README canonical example. Import still files Anthropic and Claude names under `credentials/anthropic`. The import comment says Joshua still holds Anthropic keys (`plaintext.rs`). |
 | `credentials/openai/*` | Import comment (2026-04-05): BYOK is no longer a customer path, and the heuristic stays because Joshua personally holds OpenAI keys. Not a delete candidate on that evidence. |
+| `credentials/huggingface/*` | Owner ruling 2026-09-23: **KEEP**. Do not retire. |
 | `credentials/vercel/*`, `credentials/supabase/*`, `credentials/vultr/*`, `credentials/namecheap/*`, `credentials/redis/*`, `credentials/npm/*`, `credentials/aws/*` | Import heuristics only. No in-repo note says these providers were removed. |
 | `ssh/<host>/<key-name>` (example `ssh/github`) | Spec path conventions plus the README store tree. Import files SSH key names under `ssh`. |
 | `forge/customers/<slug>/*` | `docs/MASTER_SPEC.md` compose table calls this the live per-customer prefix. Rotation re-mint comments use `forge/customers/*/license-key` (`executor.rs`, `docs/rotation-dual-slot-verify.md`, example toml). |
@@ -57,15 +68,14 @@ These are the current contract. Code still resolves them, or the canonical docs 
 | Identity `~/.age-identity/keys.txt` | Still the fallback in `config.rs` when the XDG file is absent. Removing it would break decrypt on machines that only have this file. |
 | WSL candidates under `/mnt/c/Users/$WINDOWS_USERNAME/.revealui/passage-store` and `.age-identity/keys.txt` | Extra candidates in `config.rs` when `WINDOWS_USERNAME` is set on Linux. |
 
-## RETIRE (needs Joshua approve)
+## RETIRE APPROVED (2026-09-23)
 
-Do not delete these until Joshua approves the row. This PR does not delete them.
+Joshua approved retirement of these families on 2026-09-23. Still do not delete `.age` files or vault entries until an execute-approved step, with Joshua OK per item if needed.
 
 | Item | Rationale |
 |---|---|
-| `credentials/resend/*` | `plaintext.rs` says Resend left the RevealUI stack on 2026-04-09 in favor of Gmail API. The heuristic remains only so older plaintext dumps still categorize. Resend is absent from the README canonical table. |
-| `credentials/huggingface/*` | Same import block: BYOK for proprietary providers was removed 2026-04-05. The personal-hold sentence names OpenAI and Anthropic only, not Hugging Face. Absent from the README canonical table. |
-| Any `revealcoin/` leaves | `docs/MASTER_SPEC.md` compose table: RevealCoin was cancelled 2026-05-29, its keypair files were destroyed, and it is no longer a vault consumer. No `revealcoin` path remains in code. Approve this row to confirm the namespace is empty. |
+| `credentials/resend/*` | **RETIRE APPROVED** (2026-09-23). `plaintext.rs` says Resend left the RevealUI stack on 2026-04-09 in favor of Gmail API. The heuristic remains only so older plaintext dumps still categorize. Resend is absent from the README canonical table. Not deleted. |
+| leftover `revealcoin/*` | **RETIRE APPROVED** (2026-09-23). `docs/MASTER_SPEC.md` compose table: RevealCoin was cancelled 2026-05-29, its keypair files were destroyed, and it is no longer a vault consumer. No `revealcoin` path remains in code. Not deleted. |
 
 ## CONSOLIDATE (target named)
 
@@ -88,5 +98,5 @@ Name the surviving path. Do not move leaves in this PR.
 ## Out of scope
 
 - No `revvault delete`, `set`, or store rewrite.
-- No edit to `~/.revealui/passage-store` or any `.age` file.
+- No edit to `~/.revealui/passage-store` or any `.age` file. RETIRE APPROVED rows stay on disk.
 - Import heuristics and promote's legacy-path mirror stay in code until a later change that Joshua has approved.
