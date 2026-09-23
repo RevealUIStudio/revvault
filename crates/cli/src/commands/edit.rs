@@ -69,7 +69,7 @@ pub fn run(args: EditArgs) -> anyhow::Result<()> {
                     eprintln!("No changes made.");
                 } else {
                     store.upsert(&args.path, trimmed.as_bytes())?;
-                    eprintln!("Updated: {}", args.path);
+                    eprintln!("{}", super::set::stored_confirmation(&args.path, &trimmed));
                 }
             }
         }
@@ -111,7 +111,7 @@ pub fn run(args: EditArgs) -> anyhow::Result<()> {
     }
 
     store.upsert(&args.path, trimmed.as_bytes())?;
-    eprintln!("Updated: {}", args.path);
+    eprintln!("{}", super::set::stored_confirmation(&args.path, &trimmed));
 
     Ok(())
 }

@@ -20,9 +20,16 @@ pub struct SetArgs {
     #[arg(long)]
     pub value: Option<String>,
 
-    /// Print byte-length confirmation even when stdin is piped
+    /// Accepted for compatibility. The byte-count line is always printed.
     #[arg(long)]
     pub verbose: bool,
+}
+
+/// Success line for `set` and `edit`. Byte length is the exact stored length.
+/// The prefix is at most 8 Unicode scalars so the line cannot carry the secret.
+pub(crate) fn stored_confirmation(path: &str, stored: &str) -> String {
+    let prefix: String = stored.chars().take(8).collect();
+    format!("stored {} bytes at {path} (starts: {prefix})", stored.len())
 }
 
 pub fn run(args: SetArgs, json_output: bool) -> anyhow::Result<()> {
@@ -51,20 +58,17 @@ pub fn run(args: SetArgs, json_output: bool) -> anyhow::Result<()> {
         store.set(&args.path, trimmed.as_bytes())?;
     }
 
-    let bytes = trimmed.len();
+    let _ = args.verbose;
+    eprintln!("{}", stored_confirmation(&args.path, trimmed));
     if json_output {
         println!(
             "{}",
             serde_json::to_string(&json!({
                 "status": "stored",
                 "path": args.path,
-                "bytes": bytes,
+                "bytes": trimmed.len(),
             }))?
         );
-    } else if tty || args.verbose {
-        eprintln!("✓ Stored: {} ({bytes} bytes)", args.path);
-    } else {
-        eprintln!("Stored: {}", args.path);
     }
 
     Ok(())
