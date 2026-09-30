@@ -1151,6 +1151,7 @@ fn completions_generates_bash_output() {
         .stdout(predicate::str::is_empty().not());
 }
 
+#[cfg(unix)]
 #[test]
 fn conditional_set_receipt_replays_without_exposing_secret_or_restoring_later_value() {
     let (_dir, store, identity) = setup_temp_store();
@@ -1201,6 +1202,34 @@ fn conditional_set_receipt_replays_without_exposing_secret_or_restoring_later_va
         "later-value"
     );
     invoke().write_stdin("changed-request").assert().failure();
+}
+
+#[cfg(not(unix))]
+#[test]
+fn conditional_set_rejects_unsupported_durability_without_writing_secret_or_intent() {
+    let (_dir, store, identity) = setup_temp_store();
+    let operation = "35b4a913-3d30-4a23-9ac1-072a55dde99e";
+    revvault_cmd(&store, &identity)
+        .args([
+            "set",
+            "credentials/license",
+            "--operation-id",
+            operation,
+            "--expected-absent",
+        ])
+        .write_stdin("  synthetic-sensitive\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains(
+                "durable conditional store operations are unsupported on this platform",
+            )
+            .and(predicate::str::contains("synthetic-sensitive").not()),
+        );
+    assert!(!Path::new(&store).join("credentials/license.age").exists());
+    assert!(!Path::new(&store).join(".revvault/pending.age").exists());
+    assert!(!Path::new(&store).join(".revvault/operations").exists());
 }
 
 #[test]
