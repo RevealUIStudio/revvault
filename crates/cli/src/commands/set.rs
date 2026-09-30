@@ -20,16 +20,27 @@ pub struct SetArgs {
     #[arg(long)]
     pub value: Option<String>,
 
+    /// Stable UUID for an idempotent conditional single-leaf write
+    #[arg(long, requires = "expected", conflicts_with_all = ["force", "value", "multiline"])]
+    pub operation_id: Option<String>,
+
+    /// SHA256 of the exact current decrypted bytes
+    #[arg(long, group = "expected", requires = "operation_id")]
+    pub expected_current_sha256: Option<String>,
+
+    /// Require that the secret does not exist
+    #[arg(long, group = "expected", requires = "operation_id")]
+    pub expected_absent: bool,
+
     /// Accepted for compatibility. The byte-count line is always printed.
     #[arg(long)]
     pub verbose: bool,
 }
 
 /// Success line for `set` and `edit`. Byte length is the exact stored length.
-/// The prefix is at most 8 Unicode scalars so the line cannot carry the secret.
+/// Confirmation includes only byte length and logical path, never secret content.
 pub(crate) fn stored_confirmation(path: &str, stored: &str) -> String {
-    let prefix: String = stored.chars().take(8).collect();
-    format!("stored {} bytes at {path} (starts: {prefix})", stored.len())
+    format!("stored {} bytes at {path}", stored.len())
 }
 
 pub fn run(args: SetArgs, json_output: bool) -> anyhow::Result<()> {
@@ -40,6 +51,27 @@ pub fn run(args: SetArgs, json_output: bool) -> anyhow::Result<()> {
         eprintln!(
             "warning: --value exposes the secret in shell history; prefer a prompt or piped stdin"
         );
+    }
+
+    if let Some(ref operation_id) = args.operation_id {
+        if tty {
+            anyhow::bail!("conditional writes require piped stdin");
+        }
+        let mut desired = Vec::new();
+        io::stdin().read_to_end(&mut desired)?;
+        if desired.is_empty() {
+            anyhow::bail!("no input provided on stdin");
+        }
+        let expected = if args.expected_absent {
+            revvault_core::store::ExpectedCurrent::Absent
+        } else {
+            revvault_core::store::ExpectedCurrent::Sha256(
+                args.expected_current_sha256.clone().unwrap(),
+            )
+        };
+        let receipt = store.compare_and_upsert(&args.path, expected, &desired, operation_id)?;
+        println!("{}", serde_json::to_string(&receipt)?);
+        return Ok(());
     }
 
     let input = read_secret(&args, tty)?;

@@ -2,7 +2,10 @@ use std::path::{Path, PathBuf};
 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
+
+mod operation;
+pub use operation::{ExpectedCurrent, OperationReceipt};
 use walkdir::WalkDir;
 
 use crate::config::Config;
@@ -44,10 +47,21 @@ impl PassageStore {
 
     /// Get (decrypt) a secret by its path.
     pub fn get(&self, path: &str) -> Result<SecretString> {
+        let _lock = self.operation_lock(false)?;
+        self.require_no_pending()?;
+        self.read_secret(path)
+    }
+
+    fn read_secret(&self, path: &str) -> Result<SecretString> {
         validate_path(path)?;
-        let file_path = self.resolve_path(path)?;
-        let ciphertext = std::fs::read(&file_path)
-            .map_err(|_| RevvaultError::SecretNotFound(path.to_string()))?;
+        let file_path = self.checked_secret_path(path)?;
+        let ciphertext = match std::fs::read(&file_path) {
+            Ok(value) => value,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(RevvaultError::SecretNotFound(path.to_string()))
+            }
+            Err(e) => return Err(e.into()),
+        };
         crypto::decrypt(&ciphertext, &self.identity).map_err(|e| match e {
             RevvaultError::DecryptionFailed(reason) => RevvaultError::DecryptionFailedForPath {
                 path: path.to_string(),
@@ -57,46 +71,68 @@ impl PassageStore {
         })
     }
 
-    /// Set (encrypt and write) a secret at the given path.
+    /// Create under the shared writer lock; never race a conditional write.
     pub fn set(&self, path: &str, plaintext: &[u8]) -> Result<()> {
-        validate_path(path)?;
-        let file_path = self.secret_file_path(path);
-
-        if file_path.exists() {
-            return Err(RevvaultError::SecretAlreadyExists(path.to_string()));
+        let _lock = self.operation_lock(true)?;
+        self.require_no_pending()?;
+        let file_path = self.checked_secret_path(path)?;
+        match std::fs::metadata(&file_path) {
+            Ok(_) => return Err(RevvaultError::SecretAlreadyExists(path.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
-
-        // Ensure parent directories exist
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let ciphertext = crypto::encrypt(plaintext, &self.recipients)?;
-        std::fs::write(&file_path, ciphertext)?;
-        Ok(())
+        self.write_secret(path, plaintext)
     }
 
-    /// Overwrite an existing secret (or create if missing).
+    /// Atomic overwrite under the same writer lock as conditional promotion.
     pub fn upsert(&self, path: &str, plaintext: &[u8]) -> Result<()> {
-        validate_path(path)?;
-        let file_path = self.secret_file_path(path);
+        let _lock = self.operation_lock(true)?;
+        self.require_no_pending()?;
+        self.write_secret(path, plaintext)
+    }
 
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)?;
+    fn prepare_write_path(&self, path: &str) -> Result<PathBuf> {
+        let file_path = self.checked_secret_path(path)?;
+        match std::fs::metadata(&file_path) {
+            Ok(metadata) if metadata.permissions().readonly() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "existing secret is read-only",
+                )
+                .into());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
+        let parent = file_path.parent().unwrap();
+        self.ensure_parent(parent)?;
+        if std::fs::metadata(parent)?.permissions().readonly() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "secret directory is read-only",
+            )
+            .into());
+        }
+        Ok(file_path)
+    }
 
+    fn write_secret(&self, path: &str, plaintext: &[u8]) -> Result<()> {
+        let file_path = self.prepare_write_path(path)?;
         let ciphertext = crypto::encrypt(plaintext, &self.recipients)?;
-        std::fs::write(&file_path, ciphertext)?;
-        Ok(())
+        operation::atomic_write(&file_path, &ciphertext)
     }
 
     /// List all secret entries, optionally filtered by a path prefix.
     pub fn list(&self, prefix: Option<&str>) -> Result<Vec<SecretEntry>> {
+        let _lock = self.operation_lock(false)?;
+        self.require_no_pending()?;
         let mut entries = Vec::new();
 
         for entry in WalkDir::new(&self.config.store_dir)
             .min_depth(1)
             .into_iter()
+            .filter_entry(|e| e.path() != self.config.store_dir.join(".revvault"))
             .filter_map(|e| e.ok())
         {
             let path = entry.path();
@@ -188,9 +224,17 @@ impl PassageStore {
 
     /// Delete a secret by its path.
     pub fn delete(&self, path: &str) -> Result<()> {
-        validate_path(path)?;
-        let file_path = self.resolve_path(path)?;
-        std::fs::remove_file(&file_path)?;
+        let _lock = self.operation_lock(true)?;
+        self.require_no_pending()?;
+        let file_path = self.checked_secret_path(path)?;
+        std::fs::remove_file(&file_path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                RevvaultError::SecretNotFound(path.to_string())
+            } else {
+                e.into()
+            }
+        })?;
+        operation::sync_directory(file_path.parent().unwrap())?;
 
         // Clean up empty parent directories
         if let Some(parent) = file_path.parent() {
@@ -205,17 +249,17 @@ impl PassageStore {
         &self.config.store_dir
     }
 
-    fn resolve_path(&self, path: &str) -> Result<PathBuf> {
-        let file_path = self.secret_file_path(path);
-        if file_path.exists() {
-            Ok(file_path)
-        } else {
-            Err(RevvaultError::SecretNotFound(path.to_string()))
+    fn checked_secret_path(&self, path: &str) -> Result<PathBuf> {
+        validate_path(path)?;
+        if path.split('/').next() == Some(".revvault") {
+            return Err(RevvaultError::InvalidPath(
+                "reserved store metadata path".into(),
+            ));
         }
-    }
-
-    fn secret_file_path(&self, path: &str) -> PathBuf {
-        self.config.store_dir.join(format!("{path}.age"))
+        let file_path = self.config.store_dir.join(format!("{path}.age"));
+        operation::check_path(&self.config.store_dir, &file_path)?;
+        operation::check_regular(&file_path)?;
+        Ok(file_path)
     }
 
     fn cleanup_empty_dirs(dir: &Path, stop_at: &Path) {
@@ -246,11 +290,11 @@ fn validate_path(path: &str) -> Result<()> {
     if path.contains('\0') {
         return Err(RevvaultError::InvalidPath("path contains null byte".into()));
     }
-    if path.starts_with('/') || path.starts_with('\\') {
+    if path.starts_with('/') || path.contains('\\') {
         return Err(RevvaultError::InvalidPath("path must be relative".into()));
     }
     for segment in path.split(['/', '\\']) {
-        if segment == ".." || segment == "." {
+        if segment.is_empty() || segment == ".." || segment == "." {
             return Err(RevvaultError::InvalidPath(
                 "path traversal not allowed".into(),
             ));
@@ -260,12 +304,12 @@ fn validate_path(path: &str) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use secrecy::ExposeSecret;
 
     /// Create a temp store with a generated identity and recipients file.
-    fn setup_temp_store() -> (tempfile::TempDir, PassageStore) {
+    pub(crate) fn setup_temp_store() -> (tempfile::TempDir, PassageStore) {
         let dir = tempfile::tempdir().unwrap();
         let store_dir = dir.path().join("store");
         std::fs::create_dir_all(&store_dir).unwrap();

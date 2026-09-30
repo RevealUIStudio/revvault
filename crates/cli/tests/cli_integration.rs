@@ -35,6 +35,9 @@ fn setup_temp_store() -> (TempDir, String, String) {
 
 fn revvault_cmd(store: &str, identity: &str) -> Command {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("revvault");
+    let fixture_home = Path::new(identity).parent().unwrap();
+    cmd.env("HOME", fixture_home);
+    cmd.env("XDG_CONFIG_HOME", fixture_home.join(".config"));
     cmd.env("REVVAULT_STORE", store);
     cmd.env("REVVAULT_IDENTITY", identity);
     cmd
@@ -51,7 +54,7 @@ fn bare_invocation_shows_full_help_with_examples() {
 }
 
 #[test]
-fn set_piped_confirmation_reports_trimmed_bytes_and_prefix() {
+fn set_piped_confirmation_reports_trimmed_bytes_without_secret() {
     let (_dir, store, identity) = setup_temp_store();
 
     revvault_cmd(&store, &identity)
@@ -61,8 +64,8 @@ fn set_piped_confirmation_reports_trimmed_bytes_and_prefix() {
         .assert()
         .success()
         .stderr(
-            predicate::str::contains("stored 11 bytes at credentials/test (starts: rk_live_)")
-                .and(predicate::str::contains("rk_live_a").not()),
+            predicate::str::contains("stored 11 bytes at credentials/test")
+                .and(predicate::str::contains("rk_live_").not()),
         );
 
     revvault_cmd(&store, &identity)
@@ -86,7 +89,7 @@ fn set_force_confirmation_uses_the_same_line() {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "stored 11 bytes at credentials/test (starts: rk_live_)",
+            "stored 11 bytes at credentials/test",
         ));
 }
 
@@ -111,6 +114,7 @@ fn uninitialized_vault_points_to_init() {
     assert_cmd::cargo::cargo_bin_cmd!("revvault")
         .env("REVVAULT_STORE", dir.path().join("missing-store"))
         .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join(".config"))
         .env_remove("WINDOWS_USERNAME")
         .arg("list")
         .assert()
@@ -599,6 +603,8 @@ fn init_creates_store_and_identity() {
     let id_file = dir.path().join("keys.txt");
 
     assert_cmd::cargo::cargo_bin_cmd!("revvault")
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join(".config"))
         .arg("init")
         .arg("--store-dir")
         .arg(&store_dir)
@@ -623,6 +629,8 @@ fn init_is_idempotent() {
 
     // First init
     assert_cmd::cargo::cargo_bin_cmd!("revvault")
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join(".config"))
         .arg("init")
         .arg("--store-dir")
         .arg(&store_dir)
@@ -634,6 +642,8 @@ fn init_is_idempotent() {
     // Second init — must not fail or overwrite identity
     let before = std::fs::read_to_string(&id_file).unwrap();
     assert_cmd::cargo::cargo_bin_cmd!("revvault")
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join(".config"))
         .arg("init")
         .arg("--store-dir")
         .arg(&store_dir)
@@ -1139,4 +1149,95 @@ fn completions_generates_bash_output() {
         .assert()
         .success()
         .stdout(predicate::str::is_empty().not());
+}
+
+#[test]
+fn conditional_set_receipt_replays_without_exposing_secret_or_restoring_later_value() {
+    let (_dir, store, identity) = setup_temp_store();
+    let operation = "35b4a913-3d30-4a23-9ac1-072a55dde99e";
+    let invoke = || {
+        let mut command = revvault_cmd(&store, &identity);
+        command.args([
+            "set",
+            "credentials/license",
+            "--operation-id",
+            operation,
+            "--expected-absent",
+        ]);
+        command
+    };
+    invoke()
+        .write_stdin("  synthetic-sensitive\n")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"current_matches\":true")
+                .and(predicate::str::contains("synthetic-sensitive").not()),
+        )
+        .stderr(predicate::str::contains("synthetic-sensitive").not());
+    let config = revvault_core::config::Config {
+        store_dir: store.clone().into(),
+        identity_file: identity.clone().into(),
+        recipients_file: Path::new(&store).join(".age-recipients"),
+        editor: None,
+        tmpdir: None,
+    };
+    let vault = revvault_core::store::PassageStore::open(config).unwrap();
+    assert_eq!(
+        vault.get("credentials/license").unwrap().expose_secret(),
+        "  synthetic-sensitive\n"
+    );
+    vault.upsert("credentials/license", b"later-value").unwrap();
+    invoke()
+        .write_stdin("  synthetic-sensitive\n")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"status\":\"committed\"")
+                .and(predicate::str::contains("\"current_matches\":false")),
+        );
+    assert_eq!(
+        vault.get("credentials/license").unwrap().expose_secret(),
+        "later-value"
+    );
+    invoke().write_stdin("changed-request").assert().failure();
+}
+
+#[test]
+fn conditional_set_flags_require_complete_unambiguous_stdin_request() {
+    let (_dir, store, identity) = setup_temp_store();
+    let operation = "35b4a913-3d30-4a23-9ac1-072a55dde99e";
+    for flags in [
+        vec!["--operation-id", operation],
+        vec!["--expected-absent"],
+        vec![
+            "--operation-id",
+            operation,
+            "--expected-absent",
+            "--expected-current-sha256",
+            "abc",
+        ],
+        vec!["--operation-id", operation, "--expected-absent", "--force"],
+        vec![
+            "--operation-id",
+            operation,
+            "--expected-absent",
+            "--value",
+            "synthetic",
+        ],
+        vec![
+            "--operation-id",
+            operation,
+            "--expected-current-sha256",
+            "abc",
+        ],
+    ] {
+        revvault_cmd(&store, &identity)
+            .args(["set", "credentials/license"])
+            .args(flags)
+            .write_stdin("synthetic")
+            .assert()
+            .failure();
+    }
+    assert!(!Path::new(&store).join("credentials/license.age").exists());
 }

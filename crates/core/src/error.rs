@@ -30,6 +30,15 @@ pub enum RevvaultError {
     #[error("decryption failed for {path}: {reason}")]
     DecryptionFailedForPath { path: String, reason: String },
 
+    #[error("store operation in progress or awaiting recovery")]
+    OperationPending,
+
+    #[error("conditional store operation conflicts with current state or recorded request")]
+    OperationConflict,
+
+    #[error("durable conditional store operations are unsupported on this platform")]
+    DurabilityUnsupported,
+
     #[error("invalid namespace: {0}")]
     InvalidNamespace(String),
 

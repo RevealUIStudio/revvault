@@ -104,6 +104,28 @@ revvault delete revealui/prod/stripe/secret-key
 revvault completions bash >> ~/.bashrc
 ```
 
+For a retryable single-secret conditional write, pipe the desired UTF-8 bytes to
+`revvault set <path> --operation-id <UUID> --expected-current-sha256 <SHA256>`.
+Use `--expected-absent` instead of a hash for creation. The hash describes the
+exact decrypted current bytes; conditional stdin preserves whitespace. Reuse
+an operation UUID only for the identical path, expected value and desired bytes.
+The command prints a secret-free JSON receipt. A committed retry reports
+`current_matches: false` if a later write replaced that operation's value; it
+never restores the older value.
+
+Conditional writes require Unix directory syncing. Interrupted prepared writes
+fence ordinary reads and writes until the identical operation retries; the
+journal and durable receipt are age-encrypted under the store's recipients.
+Completed receipts are retained indefinitely; there is no automatic cleanup,
+because removing a receipt would discard its operation's retry guarantee.
+Writers require writable coordination metadata under `.revvault`. On Unix,
+readers open an existing permanent lock read-only; historical read-only stores
+without coordination metadata fail closed until supported writable bootstrap.
+All maintained writers use the same OS lock, released automatically on process
+exit. External Passage writers do not participate in this protocol. This
+contract covers one leaf, not atomic promotion of several secrets.
+
+
 ### Desktop App
 
 ```bash
