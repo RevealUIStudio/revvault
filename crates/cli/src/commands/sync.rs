@@ -6,12 +6,14 @@ use std::path::PathBuf;
 use anyhow::{bail, Context};
 use chrono::Utc;
 use clap::Args;
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 use revvault_core::sync::fly::FlyClient;
 use revvault_core::sync::shape::{self, Shape};
-use revvault_core::sync::vercel::{EnvVarType, VercelClient, VercelEnvVar};
+use revvault_core::sync::vercel::{
+    ensure_key_snapshot, select_env_var, EnvVarType, VercelClient, VercelEnvVar,
+};
 use revvault_core::{Config, PassageStore};
 
 // ── CLI args ────────────────────────────────────────────────────────────────
@@ -69,8 +71,8 @@ struct ProjectSync {
     /// branch (e.g. `"staging"`), so it is only exposed to that branch's
     /// preview deployments rather than every branch's previews. Requires
     /// `targets` to include `"preview"`; `create_env_var` enforces that and
-    /// fails loudly otherwise. Updates are unaffected (Vercel preserves the
-    /// existing row's `gitBranch` on PATCH, same as `target`/`type`).
+    /// fails loudly otherwise. Updates select this exact branch scope and
+    /// preserve the existing row's branch and classification.
     #[serde(default)]
     git_branch: Option<String>,
     /// Skip these env var names (integration-managed, etc.)
@@ -94,14 +96,16 @@ struct ProjectSync {
     /// ```
     ///
     /// `sensitive = true` requests Vercel type `sensitive` when this var is
-    /// CREATED: the plaintext is never revealable in the Vercel UI or API
-    /// after write. Use it for credentials (Stripe keys, webhook secrets,
-    /// signing/JWT secrets). Updates PATCH value-only and never change an
+    /// CREATED: requests Secret protection. Production/Preview values are
+    /// unavailable to pulls; Development Secret values may be returned by the
+    /// API. Use it for credentials (Stripe keys, webhook secrets,
+    /// signing/JWT secrets). Updates preserve an
     /// existing row's type, so flipping an existing `encrypted` row still
-    /// requires delete + re-create (the diff flags that drift). Independent
+    /// requires a separately reviewed type-transition lifecycle (the diff flags
+    /// that drift). Independent
     /// of the marker, a create also requests `sensitive` whenever any
-    /// existing remote row with the same key is `sensitive` — sensitivity
-    /// is preserved, never silently downgraded.
+    /// existing remote row with the same key is sensitive or carries legacy
+    /// `secret` intent. Legacy intent alone does not verify current protection.
     #[serde(default)]
     vars: HashMap<String, VarEntry>,
 }
@@ -135,6 +139,10 @@ struct VarObject {
     shape: Shape,
     #[serde(default)]
     sensitive: bool,
+    /// Explicit ownership of this key's project-row target set. Defaults to
+    /// value-only updates; branch and custom scopes are never rewritten.
+    #[serde(default)]
+    manage_targets: bool,
 }
 
 fn default_shape() -> Shape {
@@ -166,6 +174,10 @@ impl VarEntry {
 }
 
 impl ProjectSync {
+    fn manages_targets(&self, key: &str) -> bool {
+        matches!(self.vars.get(key), Some(VarEntry::Object(o)) if o.manage_targets)
+    }
+
     /// Resolve the vault path + declared shape for a given Vercel var name.
     /// Returns the override if one is set in `vars`, otherwise the
     /// prefix-derived default with `Shape::Any`.
@@ -266,6 +278,31 @@ struct AuditEntry {
     var_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verified_scope: Option<ScopeReceipt>,
+}
+
+#[derive(Serialize)]
+struct ScopeReceipt {
+    row_id: String,
+    targets_before: Vec<String>,
+    targets_after: Vec<String>,
+    git_branch: Option<String>,
+    var_type: Option<String>,
+    visibility: Option<String>,
+}
+
+impl ScopeReceipt {
+    fn updated(row: &VercelEnvVar, targets: &[String]) -> Self {
+        Self {
+            row_id: row.id.clone().expect("selector validates IDs"),
+            targets_before: row.target.clone(),
+            targets_after: targets.to_vec(),
+            git_branch: row.git_branch.clone(),
+            var_type: row.var_type.clone(),
+            visibility: row.visibility.clone(),
+        }
+    }
 }
 
 /// Append one JSONL row to the audit log inside the synced store's
@@ -385,16 +422,28 @@ fn create_type_for(manifest_sensitive: bool, remote_sensitive: bool) -> EnvVarTy
 
 /// Diff annotation when the manifest wants `sensitive` but the remote row
 /// has some other type. Updates PATCH value-only — the type is preserved,
-/// never changed — so this drift survives every sync and needs a manual
-/// delete + re-create to resolve. `None` when there is no drift.
+/// never changed, so this drift needs the separately tracked type-transition
+/// lifecycle to resolve. `None` when there is no drift.
 fn type_drift_reason(manifest_sensitive: bool, remote_type: Option<&str>) -> Option<String> {
     if !manifest_sensitive || remote_type == Some("sensitive") {
         return None;
     }
     Some(format!(
-        "type drift: manifest wants sensitive, remote is {} — updates preserve type; delete + re-create to flip",
+        "type drift: manifest wants sensitive, remote is {} — updates preserve type; supported type transition remains tracked debt",
         remote_type.unwrap_or("unknown")
     ))
+}
+
+struct VercelProjectPlan<'a> {
+    project_name: &'a String,
+    project_cfg: &'a ProjectSync,
+    remote_vars: Vec<VercelEnvVar>,
+    managed_keys: Vec<&'a str>,
+    planned_rows: HashMap<String, VercelEnvVar>,
+    planned_values: HashMap<String, SecretString>,
+    unchanged_values: std::collections::HashSet<String>,
+    remote_sensitive: std::collections::HashSet<String>,
+    diff: Vec<DiffEntry>,
 }
 
 async fn push_mode(
@@ -411,7 +460,10 @@ async fn push_mode(
     let key_filter_set: std::collections::HashSet<&str> =
         key_filter.iter().map(|s| s.as_str()).collect();
 
-    for (project_name, project_cfg) in &manifest.projects {
+    let mut plans = Vec::new();
+    let mut projects: Vec<_> = manifest.projects.iter().collect();
+    projects.sort_by_key(|(name, _)| *name);
+    for (project_name, project_cfg) in projects {
         if !project_filter_set.is_empty() && !project_filter_set.contains(project_name.as_str()) {
             if !json_output {
                 eprintln!("skip project {} (--project filter)", project_name);
@@ -420,34 +472,25 @@ async fn push_mode(
         }
         let remote_vars = client.list_env_vars(&project_cfg.project_id).await?;
 
-        // Attempt to fetch decrypted values for MATCH detection. Falls back
-        // to None when the token lacks `env:read:decrypted` scope (403),
-        // which causes all existing vars to be treated as needing an update.
-        //
-        // Filter by the configured targets before collapsing by key — same
-        // as `remote_map` below. Without this, a row for a non-synced target
-        // (e.g. preview) could win the per-key collapse and a stale value on
-        // our actual target (e.g. production) would be falsely classified as
-        // a MATCH and skipped, leaving the synced target outdated.
-        let remote_decrypted_map: Option<HashMap<String, String>> = match client
+        let decrypted = client
             .list_env_vars_with_values(&project_cfg.project_id)
-            .await
-        {
-            Ok(Some(vars)) => Some(
-                vars.into_iter()
-                    .filter(|v| project_cfg.targets.iter().any(|t| v.target.contains(t)))
-                    .filter_map(|v| v.value.map(|val| (v.key, val)))
-                    .collect(),
-            ),
-            Ok(None) => None,
-            Err(_) => None,
-        };
-
-        let remote_map: HashMap<String, &VercelEnvVar> = remote_vars
-            .iter()
-            .filter(|v| project_cfg.targets.iter().any(|t| v.target.contains(t)))
-            .map(|v| (v.key.clone(), v))
+            .await?;
+        let managed_keys: Vec<&str> = project_cfg
+            .vars
+            .keys()
+            .filter(|key| {
+                project_cfg.manages_targets(key)
+                    && !project_cfg.skip.contains(key)
+                    && (key_filter_set.is_empty() || key_filter_set.contains(key.as_str()))
+            })
+            .map(String::as_str)
             .collect();
+        client
+            .ensure_no_shared_keys(&project_cfg.project_id, &managed_keys)
+            .await?;
+        let mut planned_rows: HashMap<String, VercelEnvVar> = HashMap::new();
+        let mut planned_values = HashMap::new();
+        let mut unchanged_values = std::collections::HashSet::new();
 
         // Remote rows of ANY target that are Vercel type `sensitive`, by
         // key. Deliberately NOT filtered by the synced targets: when the
@@ -455,7 +498,7 @@ async fn push_mode(
         // create on the synced target must still come back `sensitive`.
         let remote_sensitive: std::collections::HashSet<String> = remote_vars
             .iter()
-            .filter(|v| v.is_sensitive())
+            .filter(|v| v.requires_sensitive_create())
             .map(|v| v.key.clone())
             .collect();
 
@@ -477,6 +520,8 @@ async fn push_mode(
             }
         }
 
+        vault_var_names.sort();
+        vault_var_names.dedup();
         let mut diff: Vec<DiffEntry> = Vec::new();
 
         // Compare vault → remote
@@ -503,24 +548,17 @@ async fn push_mode(
             let (vault_path, declared_shape) = project_cfg.vault_path_for(var_name);
 
             // Read and validate the vault value before deciding the diff action.
-            let secret_result = store.get(&vault_path);
-            let vault_value = match secret_result {
-                Ok(s) => s,
-                Err(e) => {
-                    if !json_output {
-                        eprintln!(
-                            "  \x1b[31m✗\x1b[0m {} — cannot read vault path {}: {}",
-                            var_name, vault_path, e
-                        );
-                    }
-                    continue;
-                }
-            };
+            let vault_value = store.get(&vault_path).map_err(|_| anyhow::anyhow!(
+                "Cannot read vault source for selected key '{var_name}' in project '{project_name}'; no selected plan can apply"
+            ))?;
 
             let raw_value = vault_value.expose_secret();
             let violation = shape::check(raw_value, declared_shape).err();
 
             if let Some(ref v) = violation {
+                if project_cfg.manages_targets(var_name) {
+                    bail!("Invalid vault source for managed key '{var_name}' in project '{project_name}': {v}; no selected plan can apply");
+                }
                 diff.push(DiffEntry {
                     key: var_name.clone(),
                     action: DiffAction::DropShape,
@@ -529,19 +567,70 @@ async fn push_mode(
                 continue;
             }
 
-            if let Some(remote) = remote_map.get(var_name) {
+            if let Some(remote) = select_env_var(
+                &remote_vars,
+                var_name,
+                &project_cfg.targets,
+                project_cfg.git_branch.as_deref(),
+                project_cfg.manages_targets(var_name),
+            )? {
+                planned_rows.insert(var_name.clone(), remote.clone());
                 // Surface (but never auto-fix) manifest-vs-remote type drift.
-                let drift = type_drift_reason(
-                    project_cfg.sensitive_for(var_name),
-                    remote.var_type.as_deref(),
-                );
+                let drift = if remote.is_sensitive() {
+                    None
+                } else {
+                    type_drift_reason(
+                        project_cfg.sensitive_for(var_name),
+                        remote.var_type.as_deref(),
+                    )
+                };
 
-                // Check for MATCH: if decrypted remote value equals vault value, skip the write.
-                let is_match = remote_decrypted_map
+                let decrypted_row = decrypted
                     .as_ref()
-                    .and_then(|m| m.get(var_name))
-                    .map(|remote_val| remote_val == raw_value)
-                    .unwrap_or(false);
+                    .map(|rows| {
+                        ensure_key_snapshot(&remote_vars, rows, var_name)?;
+                        let matches: Vec<_> = rows.iter().filter(|r| r.id == remote.id).collect();
+                        if matches.len() > 1 {
+                            bail!("Duplicate decrypted row ID for '{var_name}'");
+                        }
+                        if let Some(row) = matches.first() {
+                            if !remote.same_scope(row) {
+                                bail!("Decrypted metadata changed for '{var_name}'");
+                            }
+                        }
+                        Ok(matches.first().copied())
+                    })
+                    .transpose()?
+                    .flatten();
+                let targets_changed = project_cfg.manages_targets(var_name)
+                    && !remote.has_targets(&project_cfg.targets);
+                let value_matches = decrypted_row
+                    // This row came from the explicit decrypt=true request and
+                    // passed the ID/scope join above. The response flag is optional;
+                    // an explicit denial or malformed flag defeats equality proof.
+                    .filter(|row| {
+                        matches!(
+                            row.metadata.get("decrypted"),
+                            None | Some(serde_json::Value::Bool(true))
+                        )
+                    })
+                    .and_then(|r| r.value.as_deref())
+                    .is_some_and(|value| value == raw_value);
+                if value_matches {
+                    unchanged_values.insert(var_name.clone());
+                }
+                let is_match = !targets_changed && value_matches;
+                let drift = if targets_changed {
+                    Some(format!(
+                        "row {} targets {:?} -> {:?}{}",
+                        remote.id.as_deref().unwrap_or_default(),
+                        remote.target,
+                        project_cfg.targets,
+                        drift.map(|d| format!("; {d}")).unwrap_or_default()
+                    ))
+                } else {
+                    drift
+                };
 
                 if is_match {
                     diff.push(DiffEntry {
@@ -570,11 +659,16 @@ async fn push_mode(
                     reason,
                 });
             }
+            planned_values.insert(var_name.clone(), vault_value);
         }
 
         // Detect orphans (in Vercel but not in vault).
         let mut seen_orphans: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for remote_var in remote_map.values() {
+        for remote_var in remote_vars.iter().filter(|r| {
+            r.git_branch == project_cfg.git_branch
+                && r.custom_environment_ids.is_empty()
+                && r.target.iter().any(|t| project_cfg.targets.contains(t))
+        }) {
             if project_cfg.skip.contains(&remote_var.key) {
                 continue;
             }
@@ -605,6 +699,11 @@ async fn push_mode(
                     "mode": "push",
                     "dry_run": !apply,
                     "diff": diff,
+                    "rows": planned_rows.iter().map(|(key, row)| serde_json::json!({
+                        "key": key, "id": row.id, "targets_before": row.target,
+                        "targets_after": if project_cfg.manages_targets(key) { &project_cfg.targets } else { &row.target },
+                        "git_branch": row.git_branch,
+                    })).collect::<Vec<_>>(),
                 })
             );
         } else {
@@ -631,13 +730,113 @@ async fn push_mode(
             }
         }
 
-        // Apply changes
-        if apply {
+        plans.push(VercelProjectPlan {
+            project_name,
+            project_cfg,
+            remote_vars,
+            managed_keys,
+            planned_rows,
+            planned_values,
+            unchanged_values,
+            remote_sensitive,
+            diff,
+        });
+    }
+
+    // Multiple manifest entries may describe disjoint branches or targets,
+    // but no immutable row or overlapping ownership may have two intents.
+    let mut owned_ids = std::collections::HashSet::new();
+    let mut ownership: Vec<(&ProjectSync, &str)> = Vec::new();
+    for plan in &plans {
+        for entry in &plan.diff {
+            if !matches!(
+                entry.action,
+                DiffAction::Add | DiffAction::Update | DiffAction::Match
+            ) {
+                continue;
+            }
+            if let Some(id) = plan
+                .planned_rows
+                .get(&entry.key)
+                .and_then(|r| r.id.as_deref())
+            {
+                if !owned_ids.insert(id) {
+                    bail!("Multiple selected plans target remote row '{id}'");
+                }
+            }
+            for (other, key) in &ownership {
+                if other.project_id == plan.project_cfg.project_id
+                    && *key == entry.key
+                    && other.git_branch == plan.project_cfg.git_branch
+                    && (other.manages_targets(key)
+                        || plan.project_cfg.manages_targets(&entry.key)
+                        || other
+                            .targets
+                            .iter()
+                            .any(|t| plan.project_cfg.targets.contains(t)))
+                {
+                    bail!("Conflicting selected ownership for '{}'", entry.key);
+                }
+            }
+            ownership.push((plan.project_cfg, &entry.key));
+        }
+    }
+
+    // No project mutates until every selected project has a valid saved plan
+    // and all selected scopes have passed a fresh metadata preflight.
+    if apply {
+        for plan in &plans {
+            let fresh = client.list_env_vars(&plan.project_cfg.project_id).await?;
+            client
+                .ensure_no_shared_keys(&plan.project_cfg.project_id, &plan.managed_keys)
+                .await?;
+            for entry in &plan.diff {
+                if matches!(
+                    entry.action,
+                    DiffAction::Add | DiffAction::Update | DiffAction::Match
+                ) {
+                    ensure_key_snapshot(&plan.remote_vars, &fresh, &entry.key)?;
+                }
+            }
+        }
+        let applied = async {
+        // Only verified same-key receipts advance the saved expected metadata.
+        // Unrelated keys from post-write reads never enter this baseline.
+        let mut verified_rows: HashMap<(String, String), Vec<VercelEnvVar>> = HashMap::new();
+        for plan in plans {
+            let VercelProjectPlan {
+                project_name,
+                project_cfg,
+                mut remote_vars,
+                managed_keys: _,
+                planned_rows,
+                planned_values,
+                unchanged_values,
+                remote_sensitive,
+                diff,
+            } = plan;
+            for ((project_id, key), rows) in &verified_rows {
+                if project_id == &project_cfg.project_id {
+                    remote_vars.retain(|row| &row.key != key);
+                    remote_vars.extend(rows.iter().cloned());
+                }
+            }
             for entry in &diff {
+                if matches!(entry.action, DiffAction::Add | DiffAction::Update) {
+                    let fresh = client.list_env_vars(&project_cfg.project_id).await?;
+                    ensure_key_snapshot(&remote_vars, &fresh, &entry.key)?;
+                    if project_cfg.manages_targets(&entry.key) {
+                        client
+                            .ensure_no_shared_keys(&project_cfg.project_id, &[&entry.key])
+                            .await?;
+                    }
+                }
                 let (vault_path, declared_shape) = project_cfg.vault_path_for(&entry.key);
                 match entry.action {
                     DiffAction::Add => {
-                        let secret = store.get(&vault_path)?;
+                        let secret = planned_values
+                            .get(&entry.key)
+                            .context("Validated plan value missing")?;
                         let raw = secret.expose_secret();
 
                         // Shape guard (should already be DROP'd in diff, but be defensive)
@@ -645,6 +844,7 @@ async fn push_mode(
                             let _ = append_audit_log(
                                 store,
                                 &AuditEntry {
+                                    verified_scope: None,
                                     timestamp: Utc::now().to_rfc3339(),
                                     action: "drop-shape".to_string(),
                                     project: project_name.clone(),
@@ -672,9 +872,22 @@ async fn push_mode(
                                 project_cfg.git_branch.as_deref(),
                             )
                             .await?;
-                        let _ = append_audit_log(
+                        let created = client.verify_create(&project_cfg.project_id, &remote_vars,
+                            &entry.key, &project_cfg.targets, project_cfg.git_branch.as_deref(),
+                            var_type).await?;
+                        if project_cfg.manages_targets(&entry.key) {
+                            client.ensure_no_shared_keys(&project_cfg.project_id, &[&entry.key]).await?;
+                        }
+                        let mut rows: Vec<_> = remote_vars.iter().filter(|row| row.key == entry.key).cloned().collect();
+                        rows.push(created.clone());
+                        verified_rows.insert((project_cfg.project_id.clone(), entry.key.clone()), rows);
+                        let mut receipt = ScopeReceipt::updated(&created, &project_cfg.targets);
+                        receipt.targets_before.clear();
+                        let verified_scope = Some(receipt);
+                        append_audit_log(
                             store,
                             &AuditEntry {
+                                verified_scope,
                                 timestamp: Utc::now().to_rfc3339(),
                                 action: "create".to_string(),
                                 project: project_name.clone(),
@@ -684,16 +897,19 @@ async fn push_mode(
                                 var_type: Some(var_type.as_str().to_string()),
                                 error: None,
                             },
-                        );
+                        ).context("Remote create completed but audit persistence failed; review a fresh sync plan")?;
                     }
                     DiffAction::Update => {
-                        let secret = store.get(&vault_path)?;
+                        let secret = planned_values
+                            .get(&entry.key)
+                            .context("Validated plan value missing")?;
                         let raw = secret.expose_secret();
 
                         if let Err(v) = shape::check(raw, declared_shape) {
                             let _ = append_audit_log(
                                 store,
                                 &AuditEntry {
+                                    verified_scope: None,
                                     timestamp: Utc::now().to_rfc3339(),
                                     action: "drop-shape".to_string(),
                                     project: project_name.clone(),
@@ -707,19 +923,41 @@ async fn push_mode(
                             continue;
                         }
 
-                        if let Some(remote) = remote_map.get(&entry.key) {
-                            if let Some(ref id) = remote.id {
+                        let remote = planned_rows.get(&entry.key).context("Planned update row missing")?;
+                        let id = remote.id.as_deref().context("Planned update ID missing")?;
+                        let changed_targets = (project_cfg.manages_targets(&entry.key)
+                            && !remote.has_targets(&project_cfg.targets))
+                            .then_some(project_cfg.targets.as_slice());
                                 client
                                     .update_env_var(
                                         &project_cfg.project_id,
                                         id,
-                                        raw,
-                                        &project_cfg.targets,
+                                        (!unchanged_values.contains(&entry.key)).then_some(raw),
+                                        changed_targets,
                                     )
                                     .await?;
-                                let _ = append_audit_log(
+                                let rows = client
+                                    .verify_update(
+                                        &project_cfg.project_id,
+                                        &remote_vars,
+                                        remote,
+                                        changed_targets,
+                                    )
+                                    .await?;
+                                if project_cfg.manages_targets(&entry.key) {
+                                    client
+                                        .ensure_no_shared_keys(
+                                            &project_cfg.project_id,
+                                            &[&entry.key],
+                                        )
+                                        .await?;
+                                }
+                                verified_rows.insert((project_cfg.project_id.clone(), entry.key.clone()), rows);
+                                append_audit_log(
                                     store,
                                     &AuditEntry {
+                                    verified_scope: Some(ScopeReceipt::updated(remote,
+                                            if project_cfg.manages_targets(&entry.key) { &project_cfg.targets } else { &remote.target })),
                                         timestamp: Utc::now().to_rfc3339(),
                                         action: "update".to_string(),
                                         project: project_name.clone(),
@@ -729,16 +967,17 @@ async fn push_mode(
                                         var_type: None,
                                         error: None,
                                     },
-                                );
-                            }
-                        }
+                                ).context("Remote update verified but audit persistence failed; review a fresh sync plan")?;
                     }
                     DiffAction::Match => {
-                        let secret = store.get(&vault_path)?;
+                        let secret = planned_values
+                            .get(&entry.key)
+                            .context("Validated plan value missing")?;
                         let raw = secret.expose_secret();
                         let _ = append_audit_log(
                             store,
                             &AuditEntry {
+                                verified_scope: None,
                                 timestamp: Utc::now().to_rfc3339(),
                                 action: "match".to_string(),
                                 project: project_name.clone(),
@@ -763,6 +1002,7 @@ async fn push_mode(
                             let _ = append_audit_log(
                                 store,
                                 &AuditEntry {
+                                    verified_scope: None,
                                     timestamp: Utc::now().to_rfc3339(),
                                     action: "drop-shape".to_string(),
                                     project: project_name.clone(),
@@ -778,7 +1018,7 @@ async fn push_mode(
                     DiffAction::Orphan => {
                         if !json_output {
                             println!(
-                                "  \x1b[31m⚠\x1b[0m  Orphan: {} (not deleted — remove manually or add to vault)",
+                                "  \x1b[31m⚠\x1b[0m  Orphan: {} (retained; supported removal lifecycle remains tracked debt)",
                                 entry.key
                             );
                         }
@@ -795,6 +1035,9 @@ async fn push_mode(
                 println!("  {} changes applied", applied);
             }
         }
+        anyhow::Ok(())
+        }.await;
+        applied.context("Sync apply halted; previous verified writes may already have completed. Review the existing success audit receipts and rerun the normal planner for a fresh plan before applying again")?;
     }
 
     Ok(())
@@ -821,6 +1064,15 @@ async fn push_mode_fly(
         project_filter.iter().map(|s| s.as_str()).collect();
     let key_filter_set: std::collections::HashSet<&str> =
         key_filter.iter().map(|s| s.as_str()).collect();
+
+    if manifest
+        .fly_apps
+        .values()
+        .flat_map(|app| app.vars.values())
+        .any(|entry| matches!(entry, VarEntry::Object(o) if o.manage_targets))
+    {
+        bail!("manage_targets is supported only for Vercel project variables");
+    }
 
     for (logical_name, app_cfg) in &manifest.fly_apps {
         if !project_filter_set.is_empty() && !project_filter_set.contains(logical_name.as_str()) {
@@ -959,6 +1211,7 @@ async fn push_mode_fly(
                     let _ = append_audit_log(
                         store,
                         &AuditEntry {
+                            verified_scope: None,
                             timestamp: Utc::now().to_rfc3339(),
                             action: "set-fly".to_string(),
                             project: app_cfg.app.clone(),
@@ -986,6 +1239,859 @@ async fn push_mode_fly(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn managed_project(keys: &[&str], manage: bool) -> ProjectSync {
+        ProjectSync {
+            project_id: "p".into(),
+            vault_prefix: "test/discovery-empty".into(),
+            targets: vec!["production".into()],
+            git_branch: None,
+            skip: vec![],
+            vars: keys
+                .iter()
+                .map(|key| {
+                    (
+                        key.to_string(),
+                        VarEntry::Object(VarObject {
+                            path: format!("test/managed/{key}"),
+                            shape: Shape::Any,
+                            sensitive: false,
+                            manage_targets: manage,
+                        }),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    async fn mock_inventory(
+        server: &mut mockito::ServerGuard,
+        state: &std::sync::Arc<std::sync::Mutex<serde_json::Value>>,
+    ) -> Vec<mockito::Mock> {
+        let plain = state.clone();
+        let decrypted = state.clone();
+        vec![
+            server
+                .mock("GET", "/v10/projects/p/env")
+                .with_status(200)
+                .with_body_from_request(move |_| {
+                    serde_json::json!({"envs": *plain.lock().unwrap()})
+                        .to_string()
+                        .into_bytes()
+                })
+                .expect_at_least(1)
+                .create_async()
+                .await,
+            server
+                .mock("GET", "/v10/projects/p/env?decrypt=true")
+                .with_status(200)
+                .with_body_from_request(move |_| {
+                    serde_json::json!({"envs": *decrypted.lock().unwrap()})
+                        .to_string()
+                        .into_bytes()
+                })
+                .expect_at_least(1)
+                .create_async()
+                .await,
+            server
+                .mock("GET", "/v1/env?projectId=p")
+                .with_status(200)
+                .with_body(r#"{"data":[],"pagination":{"next":null}}"#)
+                .expect_at_least(0)
+                .create_async()
+                .await,
+        ]
+    }
+
+    fn remote_row(key: &str, id: &str, targets: &[&str]) -> serde_json::Value {
+        serde_json::json!({"id":id, "key":key, "target":targets,
+            "type":"encrypted", "value":"same", "comment":"preserve"})
+    }
+
+    #[test]
+    fn managed_targets_is_explicit_and_rejects_typos() {
+        let manifest: SyncManifest = toml::from_str(
+            r#"
+            [projects.api]
+            project_id = "p"
+            vault_prefix = "test"
+            [projects.api.vars]
+            A = "test/a"
+            B = { path = "test/b" }
+            C = { path = "test/c", manage_targets = true }
+        "#,
+        )
+        .unwrap();
+        let project = &manifest.projects["api"];
+        assert!(!project.manages_targets("A"));
+        assert!(!project.manages_targets("B"));
+        assert!(project.manages_targets("C"));
+        assert!(toml::from_str::<VarEntry>(
+            r#"path = "test/c"
+            manage_target = true"#
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn managed_target_drift_applies_with_unchanged_value_including_preview_only() {
+        for targets in [vec!["production", "preview"], vec!["preview"]] {
+            let (_dir, store) = setup_temp_store();
+            store.upsert("test/managed/KEY", b"same").unwrap();
+            let mut server = mockito::Server::new_async().await;
+            let mut branch = remote_row("KEY", "branch", &["preview"]);
+            branch["gitBranch"] = "staging".into();
+            let mut custom = remote_row("KEY", "custom", &[]);
+            custom["customEnvironmentIds"] = serde_json::json!(["env_custom"]);
+            let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([
+                remote_row("KEY", "e1", &targets),
+                branch,
+                custom,
+                remote_row("UNMANAGED", "other", &["preview"])
+            ])));
+            let preserved = state.lock().unwrap().as_array().unwrap()[1..].to_vec();
+            let mocks = mock_inventory(&mut server, &state).await;
+            let changed = state.clone();
+            let patch = server
+                .mock("PATCH", "/v9/projects/p/env/e1")
+                .match_body(mockito::Matcher::Json(
+                    serde_json::json!({"target":["production"]}),
+                ))
+                .with_status(200)
+                .with_body_from_request(move |_| {
+                    changed.lock().unwrap()[0]["target"] = serde_json::json!(["production"]);
+                    b"{}".to_vec()
+                })
+                .expect(1)
+                .create_async()
+                .await;
+            let manifest = single_project_manifest(managed_project(&["KEY"], true));
+            let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+            // Dry-run displays drift but neither changes metadata nor sends PATCH.
+            push_mode(&store, &client, &manifest, false, true, &[], &[])
+                .await
+                .unwrap();
+            assert_eq!(
+                state.lock().unwrap()[0]["target"],
+                serde_json::json!(targets)
+            );
+            assert!(!patch.matched_async().await);
+            push_mode(&store, &client, &manifest, true, true, &[], &[])
+                .await
+                .unwrap();
+            assert_eq!(
+                state.lock().unwrap()[0]["target"],
+                serde_json::json!(["production"])
+            );
+            assert_eq!(state.lock().unwrap().as_array().unwrap()[1..], preserved);
+            // Same value and targets are now a match; normal rerun is idempotent.
+            push_mode(&store, &client, &manifest, true, true, &[], &[])
+                .await
+                .unwrap();
+            patch.assert_async().await;
+            for mock in mocks {
+                mock.assert_async().await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn decryption_proof_controls_exact_patch_fields() {
+        for proof in [
+            None,
+            Some(serde_json::json!(true)),
+            Some(serde_json::json!(false)),
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("true")),
+            Some(serde_json::json!(1)),
+        ] {
+            for targets_changed in [false, true] {
+                let (_dir, store) = setup_temp_store();
+                store.upsert("test/managed/KEY", b"same").unwrap();
+                let mut server = mockito::Server::new_async().await;
+                let targets = if targets_changed {
+                    vec!["production", "preview"]
+                } else {
+                    vec!["production"]
+                };
+                let state =
+                    std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([remote_row(
+                        "KEY", "e1", &targets
+                    )])));
+                let mocks = mock_inventory(&mut server, &state).await;
+                mocks[1].remove_async().await;
+                let mut decrypted = state.lock().unwrap()[0].clone();
+                if let Some(flag) = &proof {
+                    decrypted["decrypted"] = flag.clone();
+                }
+                let decrypt = server
+                    .mock("GET", "/v10/projects/p/env?decrypt=true")
+                    .with_status(200)
+                    .with_body(serde_json::json!({"envs":[decrypted]}).to_string())
+                    .expect(1)
+                    .create_async()
+                    .await;
+                let value_proven = matches!(proof, None | Some(serde_json::Value::Bool(true)));
+                let mut expected = serde_json::json!({});
+                if !value_proven {
+                    expected["value"] = "same".into();
+                }
+                if targets_changed {
+                    expected["target"] = serde_json::json!(["production"]);
+                }
+                let changed = state.clone();
+                let patch = server
+                    .mock("PATCH", "/v9/projects/p/env/e1")
+                    .match_body(mockito::Matcher::Json(expected))
+                    .with_status(200)
+                    .with_body_from_request(move |_| {
+                        changed.lock().unwrap()[0]["target"] = serde_json::json!(["production"]);
+                        b"{}".to_vec()
+                    })
+                    .expect(usize::from(targets_changed || !value_proven))
+                    .create_async()
+                    .await;
+                let manifest = single_project_manifest(managed_project(&["KEY"], true));
+                let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+                push_mode(&store, &client, &manifest, true, true, &[], &[])
+                    .await
+                    .unwrap();
+                decrypt.assert_async().await;
+                patch.assert_async().await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unmanaged_targets_and_filters_never_shrink_remote_scope() {
+        let (_dir, store) = setup_temp_store();
+        store.upsert("test/managed/KEY", b"new").unwrap();
+        let mut server = mockito::Server::new_async().await;
+        let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([remote_row(
+            "KEY",
+            "e1",
+            &["preview", "production"]
+        )])));
+        let _mocks = mock_inventory(&mut server, &state).await;
+        let patch = server
+            .mock("PATCH", "/v9/projects/p/env/e1")
+            .match_body(mockito::Matcher::Json(serde_json::json!({"value":"new"})))
+            .with_status(200)
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        let manifest = single_project_manifest(managed_project(&["KEY"], false));
+        push_mode(
+            &store,
+            &client,
+            &manifest,
+            true,
+            true,
+            &["different".into()],
+            &[],
+        )
+        .await
+        .unwrap();
+        push_mode(
+            &store,
+            &client,
+            &manifest,
+            true,
+            true,
+            &[],
+            &["different".into()],
+        )
+        .await
+        .unwrap();
+        assert!(!patch.matched_async().await);
+        push_mode(&store, &client, &manifest, true, true, &[], &[])
+            .await
+            .unwrap();
+        patch.assert_async().await;
+        assert_eq!(
+            state.lock().unwrap()[0]["target"],
+            serde_json::json!(["preview", "production"])
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_apply_recovers_through_normal_planner_without_rewriting_completed_key() {
+        let (_dir, store) = setup_temp_store();
+        for key in ["A", "B"] {
+            store
+                .upsert(&format!("test/managed/{key}"), b"same")
+                .unwrap();
+        }
+        let mut server = mockito::Server::new_async().await;
+        let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([
+            remote_row("A", "a", &["production", "preview"]),
+            remote_row("B", "b", &["preview"])
+        ])));
+        let _mocks = mock_inventory(&mut server, &state).await;
+        let changed = state.clone();
+        let first = server
+            .mock("PATCH", "/v9/projects/p/env/a")
+            .with_status(200)
+            .with_body_from_request(move |_| {
+                changed.lock().unwrap()[0]["target"] = serde_json::json!(["production"]);
+                b"{}".to_vec()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        let failed = server
+            .mock("PATCH", "/v9/projects/p/env/b")
+            .with_status(500)
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+        let manifest = single_project_manifest(managed_project(&["A", "B"], true));
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        let error = push_mode(&store, &client, &manifest, true, true, &[], &[])
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("previous verified writes may already have completed"));
+        assert!(error.to_string().contains("rerun the normal planner"));
+        assert!(format!("{error:#}").contains("500"));
+        let audit = std::fs::read_to_string(store.store_dir().join(".revvault/rotation-log.jsonl"))
+            .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(audit.lines().last().unwrap()).unwrap();
+        assert_eq!(receipt["key"], "A");
+        assert_eq!(receipt["verified_scope"]["row_id"], "a");
+        first.assert_async().await;
+        failed.assert_async().await;
+        failed.remove_async().await;
+        let changed = state.clone();
+        let retry = server
+            .mock("PATCH", "/v9/projects/p/env/b")
+            .with_status(200)
+            .with_body_from_request(move |_| {
+                changed.lock().unwrap()[1]["target"] = serde_json::json!(["production"]);
+                b"{}".to_vec()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        push_mode(&store, &client, &manifest, true, true, &[], &[])
+            .await
+            .unwrap();
+        first.assert_async().await;
+        retry.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_scope_and_preflight_race_fail_before_any_write() {
+        for race in [false, true] {
+            let (_dir, store) = setup_temp_store();
+            store.upsert("test/managed/KEY", b"same").unwrap();
+            let mut server = mockito::Server::new_async().await;
+            let original = remote_row("KEY", "e1", &["production", "preview"]);
+            let mut rows = vec![original.clone()];
+            if !race {
+                rows.push(remote_row("KEY", "e2", &["preview"]));
+            }
+            let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!(rows)));
+            let mocks = mock_inventory(&mut server, &state).await;
+            if race {
+                mocks[1].remove_async().await;
+                // The decryption fetch observes the planned row, then an external
+                // writer moves its branch before the preflight metadata read.
+                let changed = state.clone();
+                server
+                    .mock("GET", "/v10/projects/p/env?decrypt=true")
+                    .with_status(200)
+                    .with_body_from_request(move |_| {
+                        changed.lock().unwrap()[0]["gitBranch"] = "other".into();
+                        serde_json::json!({"envs":[original.clone()]})
+                            .to_string()
+                            .into_bytes()
+                    })
+                    .create_async()
+                    .await;
+            }
+            let patch = server
+                .mock("PATCH", "/v9/projects/p/env/e1")
+                .expect(0)
+                .create_async()
+                .await;
+            let create = server
+                .mock("POST", "/v10/projects/p/env")
+                .expect(0)
+                .create_async()
+                .await;
+            let manifest = single_project_manifest(managed_project(&["KEY"], true));
+            let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+            assert!(push_mode(&store, &client, &manifest, true, true, &[], &[])
+                .await
+                .is_err());
+            patch.assert_async().await;
+            create.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn decrypted_value_is_joined_by_row_id_and_read_failures_surface() {
+        for decrypt_failure in [false, true] {
+            let (_dir, store) = setup_temp_store();
+            store.upsert("test/managed/KEY", b"same").unwrap();
+            let mut server = mockito::Server::new_async().await;
+            let mut ordinary = remote_row("KEY", "e1", &["production"]);
+            ordinary["value"] = "old".into();
+            let mut custom = remote_row("KEY", "custom", &["production"]);
+            custom["customEnvironmentIds"] = serde_json::json!(["custom"]);
+            let state =
+                std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([ordinary, custom])));
+            let mocks = mock_inventory(&mut server, &state).await;
+            if decrypt_failure {
+                mocks[1].remove_async().await;
+                server
+                    .mock("GET", "/v10/projects/p/env?decrypt=true")
+                    .with_status(500)
+                    .with_body("{}")
+                    .expect(1)
+                    .create_async()
+                    .await;
+            }
+            let patch = server
+                .mock("PATCH", "/v9/projects/p/env/e1")
+                .match_body(mockito::Matcher::Json(serde_json::json!({"value":"same"})))
+                .with_status(200)
+                .with_body("{}")
+                .expect(if decrypt_failure { 0 } else { 1 })
+                .create_async()
+                .await;
+            let wrong = server
+                .mock("PATCH", "/v9/projects/p/env/custom")
+                .expect(0)
+                .create_async()
+                .await;
+            let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+            let manifest = single_project_manifest(managed_project(&["KEY"], false));
+            let result = push_mode(&store, &client, &manifest, true, true, &[], &[]).await;
+            assert_eq!(result.is_err(), decrypt_failure);
+            patch.assert_async().await;
+            wrong.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn later_project_ambiguity_prevents_earlier_project_write() {
+        let (_dir, store) = setup_temp_store();
+        for key in ["A", "B"] {
+            store
+                .upsert(&format!("test/managed/{key}"), b"same")
+                .unwrap();
+        }
+        let mut server = mockito::Server::new_async().await;
+        let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([remote_row(
+            "A",
+            "a",
+            &["production", "preview"]
+        )])));
+        let _mocks = mock_inventory(&mut server, &state).await;
+        let duplicate = serde_json::json!({"envs":[remote_row("B", "b1", &["preview"]), remote_row("B", "b2", &["production"])]}).to_string();
+        for path in ["/v10/projects/q/env", "/v10/projects/q/env?decrypt=true"] {
+            server
+                .mock("GET", path)
+                .with_status(200)
+                .with_body(&duplicate)
+                .create_async()
+                .await;
+        }
+        server
+            .mock("GET", "/v1/env?projectId=q")
+            .with_status(200)
+            .with_body(r#"{"data":[],"pagination":{"next":null}}"#)
+            .create_async()
+            .await;
+        let first = managed_project(&["A"], true);
+        let mut second = managed_project(&["B"], true);
+        second.project_id = "q".into();
+        let manifest = SyncManifest {
+            team_id: None,
+            projects: HashMap::from([("a".into(), first), ("b".into(), second)]),
+        };
+        let patch = server
+            .mock("PATCH", "/v9/projects/p/env/a")
+            .expect(0)
+            .create_async()
+            .await;
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        assert!(push_mode(&store, &client, &manifest, true, true, &[], &[])
+            .await
+            .is_err());
+        patch.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn managed_create_verifies_new_id_and_writes_metadata_receipt() {
+        let (_dir, store) = setup_temp_store();
+        store.upsert("test/managed/KEY", b"same").unwrap();
+        let mut server = mockito::Server::new_async().await;
+        let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([])));
+        let _mocks = mock_inventory(&mut server, &state).await;
+        let changed = state.clone();
+        let create = server
+            .mock("POST", "/v10/projects/p/env")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "key":"KEY", "value":"same", "target":["production"], "type":"sensitive"
+            })))
+            .with_status(201)
+            .with_body_from_request(move |_| {
+                let mut row = remote_row("KEY", "created", &["production"]);
+                row["type"] = "sensitive".into();
+                *changed.lock().unwrap() = serde_json::json!([row]);
+                b"{}".to_vec()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        let mut project = managed_project(&["KEY"], true);
+        if let Some(VarEntry::Object(entry)) = project.vars.get_mut("KEY") {
+            entry.sensitive = true;
+        }
+        let manifest = single_project_manifest(project);
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        push_mode(&store, &client, &manifest, true, true, &[], &[])
+            .await
+            .unwrap();
+        create.assert_async().await;
+        let audit = std::fs::read_to_string(store.store_dir().join(".revvault/rotation-log.jsonl"))
+            .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(audit.lines().last().unwrap()).unwrap();
+        assert_eq!(receipt["verified_scope"]["row_id"], "created");
+        assert_eq!(
+            receipt["verified_scope"]["targets_after"],
+            serde_json::json!(["production"])
+        );
+        assert_eq!(receipt["verified_scope"]["var_type"], "sensitive");
+        assert!(!audit.contains("same"));
+    }
+
+    #[tokio::test]
+    async fn invalid_selected_sources_prevent_all_writes_and_exclusions_remain_explicit() {
+        // Missing/corrupt/invalid managed source, missing ordinary source,
+        // then project/key/skip exclusions and the ordinary shape-drop policy.
+        for scenario in 0..8 {
+            let (_dir, store) = setup_temp_store();
+            store.upsert("test/managed/GOOD", b"same").unwrap();
+            if scenario == 1 {
+                store.upsert("test/managed/BAD", b"same").unwrap();
+                std::fs::write(
+                    store.store_dir().join("test/managed/BAD.age"),
+                    b"not-age-secret",
+                )
+                .unwrap();
+            } else if scenario == 2 || scenario == 7 {
+                store.upsert("test/managed/BAD", b"").unwrap();
+            }
+            let mut server = mockito::Server::new_async().await;
+            let state =
+                std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([remote_row(
+                    "GOOD",
+                    "good",
+                    &["production", "preview"]
+                )])));
+            let _mocks = mock_inventory(&mut server, &state).await;
+            let succeeds = scenario >= 4;
+            let changed = state.clone();
+            let patch = server
+                .mock("PATCH", "/v9/projects/p/env/good")
+                .match_body(mockito::Matcher::Json(
+                    serde_json::json!({"target":["production"]}),
+                ))
+                .with_status(200)
+                .with_body_from_request(move |_| {
+                    changed.lock().unwrap()[0]["target"] = serde_json::json!(["production"]);
+                    b"{}".to_vec()
+                })
+                .expect(usize::from(succeeds))
+                .create_async()
+                .await;
+            let create = server
+                .mock("POST", "/v10/projects/p/env")
+                .expect(0)
+                .create_async()
+                .await;
+            let mut bad = managed_project(&["BAD"], scenario != 3 && scenario != 7);
+            if scenario == 6 {
+                bad.skip.push("BAD".into());
+            }
+            let manifest = SyncManifest {
+                team_id: None,
+                projects: HashMap::from([
+                    ("a".into(), managed_project(&["GOOD"], true)),
+                    ("b".into(), bad),
+                ]),
+            };
+            let project_filter = if scenario == 4 {
+                vec!["a".into()]
+            } else {
+                vec![]
+            };
+            let key_filter = if scenario == 5 {
+                vec!["GOOD".into()]
+            } else {
+                vec![]
+            };
+            let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+            let result = push_mode(
+                &store,
+                &client,
+                &manifest,
+                true,
+                true,
+                &project_filter,
+                &key_filter,
+            )
+            .await;
+            assert_eq!(result.is_ok(), succeeds, "scenario {scenario}: {result:?}");
+            if let Err(error) = result {
+                let error = format!("{error:#}");
+                assert!(error.contains("BAD"));
+                assert!(error.contains("no selected plan can apply"));
+                assert!(!error.contains("not-age-secret"));
+                assert!(!store
+                    .store_dir()
+                    .join(".revvault/rotation-log.jsonl")
+                    .exists());
+            } else if scenario == 7 {
+                let audit =
+                    std::fs::read_to_string(store.store_dir().join(".revvault/rotation-log.jsonl"))
+                        .unwrap();
+                let entries: Vec<serde_json::Value> = audit
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                assert!(entries
+                    .iter()
+                    .any(|entry| entry["key"] == "GOOD" && entry["result"] == "ok"));
+                assert!(entries
+                    .iter()
+                    .any(|entry| entry["key"] == "BAD" && entry["action"] == "drop-shape"));
+            }
+            patch.assert_async().await;
+            create.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn branch_plans_advance_only_verified_same_key_metadata() {
+        // 0: our two branch writes succeed; 1: external same-key revision;
+        // 2: failed first verification; 3: unrelated changed key must not be adopted.
+        for scenario in 0..4 {
+            let (_dir, store) = setup_temp_store();
+            for key in ["KEY", "OTHER"] {
+                store
+                    .upsert(&format!("test/managed/{key}"), b"same")
+                    .unwrap();
+            }
+            let mut server = mockito::Server::new_async().await;
+            let mut rows = Vec::new();
+            for branch in ["a", "b"] {
+                let mut row = remote_row("KEY", branch, &["preview"]);
+                row["gitBranch"] = branch.into();
+                row["type"] = "sensitive".into();
+                row["value"] = serde_json::Value::Null;
+                row["updatedAt"] = 0.into();
+                rows.push(row);
+            }
+            let mut other = remote_row("OTHER", "other", &["production"]);
+            other["updatedAt"] = 0.into();
+            rows.push(other);
+            let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!(rows)));
+            let phase = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let read_state = state.clone();
+            let read_phase = phase.clone();
+            server
+                .mock("GET", "/v10/projects/p/env")
+                .with_status(200)
+                .with_body_from_request(move |_| {
+                    let mut state = read_state.lock().unwrap();
+                    let body = serde_json::json!({"envs":*state}).to_string().into_bytes();
+                    if scenario == 1 && read_phase.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                        // Change after the first verified response was captured.
+                        state[1]["updatedAt"] = 9.into();
+                        state[1]["value"] = "external".into();
+                        read_phase.store(2, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    body
+                })
+                .expect_at_least(1)
+                .create_async()
+                .await;
+            server
+                .mock("GET", "/v10/projects/p/env?decrypt=true")
+                .with_status(403)
+                .expect_at_least(2)
+                .create_async()
+                .await;
+            let changed = state.clone();
+            let first_phase = phase.clone();
+            let first = server
+                .mock("PATCH", "/v9/projects/p/env/a")
+                .match_body(mockito::Matcher::Json(serde_json::json!({"value":"same"})))
+                .with_status(200)
+                .with_body_from_request(move |_| {
+                    let mut state = changed.lock().unwrap();
+                    state[0]["updatedAt"] = 1.into();
+                    if scenario == 2 {
+                        state[0]["gitBranch"] = "unexpected".into();
+                    }
+                    if scenario == 3 {
+                        state[2]["updatedAt"] = 9.into();
+                        state[2]["value"] = "external".into();
+                    }
+                    first_phase.store(1, std::sync::atomic::Ordering::SeqCst);
+                    b"{}".to_vec()
+                })
+                .expect(1)
+                .create_async()
+                .await;
+            let changed = state.clone();
+            let second = server
+                .mock("PATCH", "/v9/projects/p/env/b")
+                .match_body(mockito::Matcher::Json(serde_json::json!({"value":"same"})))
+                .with_status(200)
+                .with_body_from_request(move |_| {
+                    changed.lock().unwrap()[1]["updatedAt"] = 1.into();
+                    b"{}".to_vec()
+                })
+                .expect(if scenario == 0 || scenario == 3 { 1 } else { 0 })
+                .create_async()
+                .await;
+            let unrelated = server
+                .mock("PATCH", "/v9/projects/p/env/other")
+                .expect(0)
+                .create_async()
+                .await;
+            let mut projects = HashMap::new();
+            for branch in ["a", "b"] {
+                let mut project = managed_project(&["KEY"], false);
+                project.git_branch = Some(branch.into());
+                project.targets = vec!["preview".into()];
+                projects.insert(branch.into(), project);
+            }
+            if scenario == 3 {
+                projects.insert("c".into(), managed_project(&["OTHER"], false));
+            }
+            let manifest = SyncManifest {
+                team_id: None,
+                projects,
+            };
+            let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+            let result = push_mode(&store, &client, &manifest, true, true, &[], &[]).await;
+            assert_eq!(
+                result.is_ok(),
+                scenario == 0,
+                "scenario {scenario}: {result:?}"
+            );
+            first.assert_async().await;
+            second.assert_async().await;
+            unrelated.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn aliasing_project_entries_cannot_write_one_immutable_row_twice() {
+        let (_dir, store) = setup_temp_store();
+        store.upsert("test/managed/KEY", b"new").unwrap();
+        let mut server = mockito::Server::new_async().await;
+        let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([remote_row(
+            "KEY",
+            "same-id",
+            &["production"]
+        )])));
+        let _mocks = mock_inventory(&mut server, &state).await;
+        for path in [
+            "/v10/projects/alias/env",
+            "/v10/projects/alias/env?decrypt=true",
+        ] {
+            server
+                .mock("GET", path)
+                .with_status(200)
+                .with_body(serde_json::json!({"envs":*state.lock().unwrap()}).to_string())
+                .create_async()
+                .await;
+        }
+        let first = managed_project(&["KEY"], false);
+        let mut second = managed_project(&["KEY"], false);
+        second.project_id = "alias".into();
+        let manifest = SyncManifest {
+            team_id: None,
+            projects: HashMap::from([("a".into(), first), ("b".into(), second)]),
+        };
+        let patch = server
+            .mock("PATCH", "/v9/projects/p/env/same-id")
+            .expect(0)
+            .create_async()
+            .await;
+        let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+        let error = push_mode(&store, &client, &manifest, true, true, &[], &[])
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Multiple selected plans target remote row"));
+        patch.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn unreadable_sensitive_values_update_without_redundant_target_fields() {
+        for target_drift in [false, true] {
+            let (_dir, store) = setup_temp_store();
+            store.upsert("test/managed/KEY", b"same").unwrap();
+            let mut server = mockito::Server::new_async().await;
+            let targets = if target_drift {
+                vec!["production", "preview"]
+            } else {
+                vec!["production"]
+            };
+            let mut row = remote_row("KEY", "sensitive", &targets);
+            row["type"] = "sensitive".into();
+            row["value"] = serde_json::Value::Null;
+            let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([row])));
+            let mocks = mock_inventory(&mut server, &state).await;
+            mocks[1].remove_async().await;
+            server
+                .mock("GET", "/v10/projects/p/env?decrypt=true")
+                .with_status(403)
+                .create_async()
+                .await;
+            let mut body = serde_json::json!({"value":"same"});
+            if target_drift {
+                body["target"] = serde_json::json!(["production"]);
+            }
+            let changed = state.clone();
+            let patch = server
+                .mock("PATCH", "/v9/projects/p/env/sensitive")
+                .match_body(mockito::Matcher::Json(body))
+                .with_status(200)
+                .with_body_from_request(move |_| {
+                    let mut state = changed.lock().unwrap();
+                    state[0]["target"] = serde_json::json!(["production"]);
+                    state[0]["updatedAt"] = 1.into();
+                    b"{}".to_vec()
+                })
+                .expect(1)
+                .create_async()
+                .await;
+            let client = VercelClient::new("t".into(), None).with_base_url(server.url());
+            let manifest = single_project_manifest(managed_project(&["KEY"], true));
+            push_mode(&store, &client, &manifest, true, true, &[], &[])
+                .await
+                .unwrap();
+            patch.assert_async().await;
+            assert_eq!(state.lock().unwrap()[0]["type"], "sensitive");
+        }
+    }
 
     fn project_with_vars(vars: HashMap<String, VarEntry>) -> ProjectSync {
         ProjectSync {
@@ -1038,6 +2144,7 @@ mod tests {
                 path: "revealui/prod/db/postgres-url".to_string(),
                 shape: Shape::PostgresUrl,
                 sensitive: false,
+                manage_targets: false,
             }),
         );
         let cfg = project_with_vars(vars);
@@ -1275,21 +2382,24 @@ mod tests {
 
         let mut server = mockito::Server::new_async().await;
         let m_list = server
-            .mock("GET", "/projects/prj_p/env")
+            .mock("GET", "/v10/projects/prj_p/env")
             .with_status(200)
             .with_body(
                 r#"{"envs":[{"id":"e1","key":"STRIPE_SECRET_KEY","target":["preview"],"type":"sensitive"}]}"#,
             )
+            .expect(3)
             .create_async()
             .await;
         let m_decrypt = server
-            .mock("GET", "/projects/prj_p/env?decrypt=true")
+            .mock("GET", "/v10/projects/prj_p/env?decrypt=true")
             .with_status(403)
             .with_body("{}")
             .create_async()
             .await;
+        let verified = server.mock("GET", "/v10/projects/prj_p/env").with_status(200)
+            .with_body(r#"{"envs":[{"id":"e1","key":"STRIPE_SECRET_KEY","target":["preview"],"type":"sensitive"},{"id":"new","key":"STRIPE_SECRET_KEY","target":["production"],"type":"sensitive"}]}"#).expect(1).create_async().await;
         let m_create = server
-            .mock("POST", "/projects/prj_p/env")
+            .mock("POST", "/v10/projects/prj_p/env")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
                 "key": "STRIPE_SECRET_KEY",
                 "target": ["production"],
@@ -1323,6 +2433,7 @@ mod tests {
         m_list.assert_async().await;
         m_decrypt.assert_async().await;
         m_create.assert_async().await;
+        verified.assert_async().await;
     }
 
     #[tokio::test]
@@ -1334,19 +2445,22 @@ mod tests {
 
         let mut server = mockito::Server::new_async().await;
         let m_list = server
-            .mock("GET", "/projects/prj_p/env")
+            .mock("GET", "/v10/projects/prj_p/env")
             .with_status(200)
             .with_body(r#"{"envs":[]}"#)
+            .expect(3)
             .create_async()
             .await;
         let m_decrypt = server
-            .mock("GET", "/projects/prj_p/env?decrypt=true")
+            .mock("GET", "/v10/projects/prj_p/env?decrypt=true")
             .with_status(403)
             .with_body("{}")
             .create_async()
             .await;
+        let verified = server.mock("GET", "/v10/projects/prj_p/env").with_status(200)
+            .with_body(r#"{"envs":[{"id":"new","key":"REVEALUI_SECRET","target":["production"],"type":"sensitive"}]}"#).expect(1).create_async().await;
         let m_create = server
-            .mock("POST", "/projects/prj_p/env")
+            .mock("POST", "/v10/projects/prj_p/env")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
                 "key": "REVEALUI_SECRET",
                 "type": "sensitive",
@@ -1364,6 +2478,7 @@ mod tests {
                 path: "revealui/prod/secret".to_string(),
                 shape: Shape::Any,
                 sensitive: true,
+                manage_targets: false,
             }),
         );
         let manifest = single_project_manifest(ProjectSync {
@@ -1383,6 +2498,7 @@ mod tests {
         m_list.assert_async().await;
         m_decrypt.assert_async().await;
         m_create.assert_async().await;
+        verified.assert_async().await;
     }
 
     #[tokio::test]
@@ -1395,19 +2511,22 @@ mod tests {
 
         let mut server = mockito::Server::new_async().await;
         let m_list = server
-            .mock("GET", "/projects/prj_p/env")
+            .mock("GET", "/v10/projects/prj_p/env")
             .with_status(200)
             .with_body(r#"{"envs":[]}"#)
+            .expect(3)
             .create_async()
             .await;
         let m_decrypt = server
-            .mock("GET", "/projects/prj_p/env?decrypt=true")
+            .mock("GET", "/v10/projects/prj_p/env?decrypt=true")
             .with_status(403)
             .with_body("{}")
             .create_async()
             .await;
+        let verified = server.mock("GET", "/v10/projects/prj_p/env").with_status(200)
+            .with_body(r#"{"envs":[{"id":"new","key":"NEXT_PUBLIC_API_URL","target":["production"],"type":"encrypted"}]}"#).expect(1).create_async().await;
         let m_create = server
-            .mock("POST", "/projects/prj_p/env")
+            .mock("POST", "/v10/projects/prj_p/env")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
                 "key": "NEXT_PUBLIC_API_URL",
                 "type": "encrypted",
@@ -1440,6 +2559,7 @@ mod tests {
         m_list.assert_async().await;
         m_decrypt.assert_async().await;
         m_create.assert_async().await;
+        verified.assert_async().await;
     }
 
     // ── Fly manifest ─────────────────────────────────────────────────────────
