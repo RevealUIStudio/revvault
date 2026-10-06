@@ -1,0 +1,49 @@
+# Security-sensitive source and policy. GitHub requests a review from either
+# account. This file owns itself so later policy edits require the same review.
+
+/.github/CODEOWNERS @joshua-v-dev @RevealUIStudio
+/.github/workflows/ @joshua-v-dev @RevealUIStudio
+
+# Age encryption, identity load, vault init, and store/identity resolution.
+/crates/core/src/crypto.rs @joshua-v-dev @RevealUIStudio
+/crates/core/src/identity.rs @joshua-v-dev @RevealUIStudio
+/crates/core/src/init.rs @joshua-v-dev @RevealUIStudio
+/crates/core/src/config.rs @joshua-v-dev @RevealUIStudio
+
+# On-disk secret store, import, credential rotation, and outbound sync.
+/crates/core/src/store.rs @joshua-v-dev @RevealUIStudio
+/crates/core/src/store/ @joshua-v-dev @RevealUIStudio
+/crates/core/src/import/ @joshua-v-dev @RevealUIStudio
+/crates/core/src/rotation/ @joshua-v-dev @RevealUIStudio
+/crates/core/src/sync/ @joshua-v-dev @RevealUIStudio
+
+# Surfaces that reveal, write, or rotate secret material.
+/crates/cli/src/commands/delete.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/edit.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/export_env.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/generate.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/get.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/init.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/migrate.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/rotate.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/rotation_promote.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/rotation_verify.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/run.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/set.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/stream_safe.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/commands/sync.rs @joshua-v-dev @RevealUIStudio
+/crates/cli/src/tui_editor.rs @joshua-v-dev @RevealUIStudio
+/crates/tauri-app/src/lib.rs @joshua-v-dev @RevealUIStudio
+/crates/tauri-app/src/state.rs @joshua-v-dev @RevealUIStudio
+/crates/tauri-app/capabilities/ @joshua-v-dev @RevealUIStudio
+
+# Scanners, allowlists, CodeQL scope, and supply-chain advisory ignores.
+/.gitleaks.toml @joshua-v-dev @RevealUIStudio
+/.gitleaks.issues.toml @joshua-v-dev @RevealUIStudio
+/.leakignore @joshua-v-dev @RevealUIStudio
+/deny.toml @joshua-v-dev @RevealUIStudio
+/.cargo/audit.toml @joshua-v-dev @RevealUIStudio
+/.github/codeql/ @joshua-v-dev @RevealUIStudio
+/scripts/check-client-leaks.sh @joshua-v-dev @RevealUIStudio
+/scripts/check-no-private-leaks.sh @joshua-v-dev @RevealUIStudio
+/scripts/check-no-private-leaks.test.sh @joshua-v-dev @RevealUIStudio

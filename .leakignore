@@ -24,3 +24,7 @@ frontend/src/components/SetupScreen.test.tsx   abs-home-path
 
 # Materialized revealfleet git hardline: ban-instruction names retired org email.
 .claude/rules/git.md                    retired-org-email
+
+# CODEOWNERS must name the review account. The handle is the owner target,
+# not a private path.
+.github/CODEOWNERS                      lit-username
