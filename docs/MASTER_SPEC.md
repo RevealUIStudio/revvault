@@ -226,6 +226,7 @@ Per-credential-type rotation runbook lives at [`revealui:docs/CREDENTIAL-ROTATIO
 - **No plaintext on disk** outside a tmpfs-backed restore directory zeroized on command exit.
 - **No logging of values** — debug logs reference paths, never decrypted bodies.
 - **CI:** SHA-pinned 37 actions (`60c2912`); Tauri cross-platform build workflow (`9e54c1d`); cargo-deny (`deny.toml`); rolling stable Rustup channel (`rust-toolchain.toml`), with Nix toolchain reproducibility supplied by `flake.lock`; `gitleaks` scanned.
+- **Async trait compatibility:** `crates/core/Cargo.toml` requires `async-trait >= 0.1.92` within the compatible 0.1 series, with the resolved release recorded in `Cargo.lock`. Rust 1.99 Clippy diagnosed the older macro's redundant generated `#[must_use]` attributes in `RotationProvider`. The [upstream owning fix](https://github.com/dtolnay/async-trait/commit/875ceecb100bab2cf369178633b4791336d92b75) removes that generated attribute; its existing unused-future regression still rejects discarded futures. This replaces the defective expansion without an application-level lint allowance, provider rewrite, or toolchain downgrade. Compiler versions remain part of validation receipts: older local/Nix passes do not establish a pass on rolling CI stable.
 
 ---
 
