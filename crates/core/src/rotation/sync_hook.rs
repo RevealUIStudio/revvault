@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::PassageStore;
 use crate::sync::shape::{self, Shape, ShapeViolation};
-use crate::sync::vercel::{EnvVarType, VercelClient};
+use crate::sync::vercel::{ensure_key_snapshot, select_env_var, EnvVarType, VercelClient};
 
 /// Per-provider sync block. Today only Vercel is supported; this
 /// shape leaves room for future targets (`github`, `cloudflare`,
@@ -63,6 +63,7 @@ pub struct VercelSyncRef {
 /// the cli sync tool's `VercelEnvVar` API DTO over in
 /// `crates/core/src/sync/vercel.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VercelEnvVarRef {
     /// Vercel env-var name (e.g. `POSTGRES_URL`).
     pub name: String,
@@ -260,39 +261,116 @@ async fn push_to_vercel(
         }
     };
 
-    for ev in &vercel_ref.env_vars {
-        // Find an existing row for this env-var name. Vercel allows
-        // multiple rows per name (different `target` arrays); for
-        // sync we update the first match and create otherwise.
-        let existing_id = existing
+    // Resolve every configured row before the first mutation. Rotation never
+    // owns targets and must not pick a same-name branch/custom/integration row.
+    let selections: anyhow::Result<Vec<_>> = {
+        let mut names = std::collections::BTreeSet::new();
+        vercel_ref
+            .env_vars
             .iter()
-            .find(|x| x.key == ev.name)
-            .and_then(|x| x.id.clone());
-
-        let result = match existing_id {
-            Some(id) => {
-                client
-                    .update_env_var(&vercel_ref.project_id, &id, value_str, &ev.targets)
-                    .await
-            }
-            None => {
-                let var_type = if ev.sensitive {
-                    EnvVarType::Sensitive
-                } else {
-                    EnvVarType::Encrypted
-                };
-                client
-                    .create_env_var(
-                        &vercel_ref.project_id,
+            .map(|ev| {
+                if !names.insert(&ev.name) {
+                    anyhow::bail!("Duplicate rotation sync key '{}'", ev.name);
+                }
+                select_env_var(&existing, &ev.name, &ev.targets, None, false)
+            })
+            .collect()
+    };
+    let selections = match selections {
+        Ok(rows) => rows,
+        Err(error) => {
+            for ev in &vercel_ref.env_vars {
+                for target in &ev.targets {
+                    log.push(SyncLogEntry::failed(
                         &ev.name,
-                        value_str,
-                        &ev.targets,
-                        var_type,
-                        None,
-                    )
-                    .await
+                        target,
+                        &value_shape,
+                        error.to_string(),
+                    ));
+                }
             }
-        };
+            return;
+        }
+    };
+    let preflight = async {
+        let fresh = client.list_env_vars(&vercel_ref.project_id).await?;
+        for ev in &vercel_ref.env_vars {
+            ensure_key_snapshot(&existing, &fresh, &ev.name)?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(error) = preflight {
+        for ev in &vercel_ref.env_vars {
+            for target in &ev.targets {
+                log.push(SyncLogEntry::failed(
+                    &ev.name,
+                    target,
+                    &value_shape,
+                    error.to_string(),
+                ));
+            }
+        }
+        return;
+    }
+    let mut halted = false;
+    for (ev, row) in vercel_ref.env_vars.iter().zip(selections) {
+        let result = async {
+            if halted {
+                anyhow::bail!("Earlier sync operation failed; review a fresh sync plan");
+            }
+            let fresh = client.list_env_vars(&vercel_ref.project_id).await?;
+            ensure_key_snapshot(&existing, &fresh, &ev.name)?;
+            match row {
+                Some(row) => {
+                    client
+                        .update_env_var(
+                            &vercel_ref.project_id,
+                            row.id.as_deref().expect("selector validates IDs"),
+                            Some(value_str),
+                            None,
+                        )
+                        .await?;
+                    client
+                        .verify_update(&vercel_ref.project_id, &existing, row, None)
+                        .await
+                        .map(|_| ())
+                }
+                None => {
+                    let var_type = if ev.sensitive
+                        || existing
+                            .iter()
+                            .any(|r| r.key == ev.name && r.requires_sensitive_create())
+                    {
+                        EnvVarType::Sensitive
+                    } else {
+                        EnvVarType::Encrypted
+                    };
+                    client
+                        .create_env_var(
+                            &vercel_ref.project_id,
+                            &ev.name,
+                            value_str,
+                            &ev.targets,
+                            var_type,
+                            None,
+                        )
+                        .await?;
+                    client
+                        .verify_create(
+                            &vercel_ref.project_id,
+                            &existing,
+                            &ev.name,
+                            &ev.targets,
+                            None,
+                            var_type,
+                        )
+                        .await
+                        .map(|_| ())
+                }
+            }
+        }
+        .await;
 
         match result {
             Ok(()) => {
@@ -301,7 +379,8 @@ async fn push_to_vercel(
                 }
             }
             Err(e) => {
-                let reason = format!("{e}");
+                halted = true;
+                let reason = format!("{e}; previous successful sync writes may already have completed. Review the success audit receipts and rerun the normal sync planner for a fresh plan before applying again");
                 for t in &ev.targets {
                     log.push(SyncLogEntry::failed(
                         &ev.name,
@@ -319,6 +398,69 @@ async fn push_to_vercel(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn rotation_selects_target_scope_and_rejects_ambiguity_before_writes() {
+        for ambiguous in [false, true] {
+            let (_dir, store) = setup_temp_store();
+            store.upsert("token", b"token-x").unwrap();
+            let mut server = mockito::Server::new_async().await;
+            let mut rows = serde_json::json!([
+                {"id":"preview", "key":"KEY", "target":["preview"], "type":"sensitive"},
+                {"id":"production", "key":"KEY", "target":["production"], "type":"sensitive"}
+            ]);
+            if ambiguous {
+                rows.as_array_mut().unwrap().push(serde_json::json!({
+                    "id":"overlap", "key":"KEY", "target":["production", "preview"], "type":"sensitive"
+                }));
+            }
+            let list = server
+                .mock("GET", "/v10/projects/p/env")
+                .with_status(200)
+                .with_body(serde_json::json!({"envs":rows}).to_string())
+                .expect(if ambiguous { 1 } else { 4 })
+                .create_async()
+                .await;
+            let patch = server
+                .mock("PATCH", "/v9/projects/p/env/production")
+                .match_body(mockito::Matcher::Json(
+                    serde_json::json!({"value":"rotated"}),
+                ))
+                .with_status(200)
+                .with_body("{}")
+                .expect(if ambiguous { 0 } else { 1 })
+                .create_async()
+                .await;
+            let wrong = server
+                .mock("PATCH", "/v9/projects/p/env/preview")
+                .expect(0)
+                .create_async()
+                .await;
+            let sync = SyncConfig {
+                vercel: Some(VercelSyncRef {
+                    api_token_path: "token".into(),
+                    project_id: "p".into(),
+                    team_id: None,
+                    env_vars: vec![VercelEnvVarRef {
+                        name: "KEY".into(),
+                        targets: vec!["production".into()],
+                        sensitive: false,
+                    }],
+                }),
+            };
+            let log = apply_sync_after_rotation_inner(
+                &store,
+                &sync,
+                &SecretString::from("rotated"),
+                Some(&server.url()),
+            )
+            .await;
+            assert_eq!(log[0].status, if ambiguous { "failed" } else { "success" });
+            list.assert_async().await;
+            patch.assert_async().await;
+            wrong.assert_async().await;
+        }
+    }
+
     #[test]
     fn vercel_env_var_ref_default_targets_is_production() {
         let toml_src = r#"name = "POSTGRES_URL""#;
@@ -326,6 +468,20 @@ mod tests {
         assert_eq!(ev.name, "POSTGRES_URL");
         assert_eq!(ev.targets, vec!["production".to_string()]);
         assert!(!ev.sensitive, "sensitive must default to false");
+    }
+
+    #[test]
+    fn rotation_rejects_unsupported_target_ownership_instead_of_ignoring_it() {
+        assert!(toml::from_str::<VercelEnvVarRef>(
+            r#"name = "KEY"
+            manage_targets = true"#
+        )
+        .is_err());
+        assert!(toml::from_str::<VercelEnvVarRef>(
+            r#"name = "KEY"
+            git_branch = "staging""#
+        )
+        .is_err());
     }
 
     #[test]
@@ -446,28 +602,31 @@ mod tests {
 
         let mut server = mockito::Server::new_async().await;
         let m_list = server
-            .mock("GET", "/projects/prj/env")
+            .mock("GET", "/v10/projects/prj/env")
             .with_status(200)
             .with_body(
                 r#"{"envs":[{"id":"e1","key":"POSTGRES_URL","target":["production"],"type":"encrypted"}]}"#,
             )
-            .expect(1)
+            .expect(5)
             .create_async()
             .await;
         let m_update = server
-            .mock("PATCH", "/projects/prj/env/e1")
+            .mock("PATCH", "/v9/projects/prj/env/e1")
             .with_status(200)
             .with_body("{}")
             .expect(1)
             .create_async()
             .await;
         let m_create = server
-            .mock("POST", "/projects/prj/env")
+            .mock("POST", "/v10/projects/prj/env")
             .with_status(201)
             .with_body("{}")
             .expect(1)
             .create_async()
             .await;
+        let verified = server.mock("GET", "/v10/projects/prj/env").with_status(200)
+            .with_body(r#"{"envs":[{"id":"e1","key":"POSTGRES_URL","target":["production"],"type":"encrypted"},{"id":"e2","key":"POSTGRES_NEW","target":["production"],"type":"encrypted"}]}"#)
+            .expect(1).create_async().await;
 
         let sync = SyncConfig {
             vercel: Some(VercelSyncRef {
@@ -507,6 +666,7 @@ mod tests {
         m_list.assert_async().await;
         m_update.assert_async().await;
         m_create.assert_async().await;
+        verified.assert_async().await;
     }
 
     #[tokio::test]
@@ -551,14 +711,14 @@ mod tests {
 
         let mut server = mockito::Server::new_async().await;
         let m_list = server
-            .mock("GET", "/projects/prj/env")
+            .mock("GET", "/v10/projects/prj/env")
             .with_status(200)
             .with_body(r#"{"envs":[]}"#)
-            .expect(1)
+            .expect(3)
             .create_async()
             .await;
         let m_create = server
-            .mock("POST", "/projects/prj/env")
+            .mock("POST", "/v10/projects/prj/env")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
                 "key": "STRIPE_WEBHOOK_SECRET",
                 "type": "sensitive",
@@ -568,6 +728,9 @@ mod tests {
             .expect(1)
             .create_async()
             .await;
+        let verified = server.mock("GET", "/v10/projects/prj/env").with_status(200)
+            .with_body(r#"{"envs":[{"id":"created","key":"STRIPE_WEBHOOK_SECRET","target":["production"],"type":"sensitive"}]}"#)
+            .expect(1).create_async().await;
 
         let sync = SyncConfig {
             vercel: Some(VercelSyncRef {
@@ -595,6 +758,110 @@ mod tests {
 
         m_list.assert_async().await;
         m_create.assert_async().await;
+        verified.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn rotation_create_verification_failure_preserves_prior_success_and_halts() {
+        for scenario in 0..3 {
+            let (_dir, store) = setup_temp_store();
+            store.upsert("token", b"token-x").unwrap();
+            let mut server = mockito::Server::new_async().await;
+            let state = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([
+                {"id":"earlier", "key":"EARLIER", "type":"encrypted", "target":["production"]}
+            ])));
+            let read = state.clone();
+            let list = server
+                .mock("GET", "/v10/projects/p/env")
+                .with_status(200)
+                .with_body_from_request(move |_| {
+                    serde_json::json!({"envs":*read.lock().unwrap()})
+                        .to_string()
+                        .into_bytes()
+                })
+                .expect(6)
+                .create_async()
+                .await;
+            let patch = server
+                .mock("PATCH", "/v9/projects/p/env/earlier")
+                .match_body(mockito::Matcher::Json(
+                    serde_json::json!({"value":"rotated"}),
+                ))
+                .with_status(200)
+                .with_body("{}")
+                .expect(1)
+                .create_async()
+                .await;
+            let changed = state.clone();
+            let create = server.mock("POST", "/v10/projects/p/env")
+                .match_body(mockito::Matcher::PartialJson(serde_json::json!({"key":"CREATED", "type":"sensitive"})))
+                .with_status(201).with_body_from_request(move |_| {
+                    if scenario != 2 {
+                        changed.lock().unwrap().as_array_mut().unwrap().push(serde_json::json!({
+                            "id":"created", "key":"CREATED", "type":if scenario == 0 {"encrypted"} else {"sensitive"},
+                            "target":if scenario == 1 {vec!["preview"]} else {vec!["production"]}
+                        }));
+                    }
+                    b"{}".to_vec()
+                }).expect(1).create_async().await;
+            let later = server
+                .mock("POST", "/v10/projects/p/env")
+                .match_body(mockito::Matcher::PartialJson(
+                    serde_json::json!({"key":"LATER"}),
+                ))
+                .expect(0)
+                .create_async()
+                .await;
+            let sync = SyncConfig {
+                vercel: Some(VercelSyncRef {
+                    api_token_path: "token".into(),
+                    project_id: "p".into(),
+                    team_id: None,
+                    env_vars: ["EARLIER", "CREATED", "LATER"]
+                        .iter()
+                        .map(|name| VercelEnvVarRef {
+                            name: (*name).into(),
+                            targets: vec!["production".into()],
+                            sensitive: true,
+                        })
+                        .collect(),
+                }),
+            };
+            let log = apply_sync_after_rotation_inner(
+                &store,
+                &sync,
+                &SecretString::from("rotated"),
+                Some(&server.url()),
+            )
+            .await;
+            assert_eq!(log.len(), 3);
+            assert_eq!(
+                (log[0].env_var.as_str(), log[0].status.as_str()),
+                ("EARLIER", "success")
+            );
+            assert_eq!(log[1].status, "failed");
+            assert!(log[1]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Create completed"));
+            assert!(log[1]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("previous successful sync writes"));
+            assert_eq!(log[2].status, "failed");
+            assert!(log[2]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Earlier sync operation failed"));
+            assert!(!serde_json::to_string(&log).unwrap().contains("rotated"));
+            list.assert_async().await;
+            patch.assert_async().await;
+            create.assert_async().await;
+            later.assert_async().await;
+        }
     }
 
     /// Proves the bug class: a rotation provider returning an empty string

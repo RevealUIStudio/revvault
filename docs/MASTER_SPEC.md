@@ -36,7 +36,7 @@ revvault/
 ├── frontend/                 # React 19 desktop UI (consumes tauri-app commands)
 ├── scripts/                  # support scripts (test fixtures, dev helpers)
 ├── flake.nix                 # Nix dev shell
-├── rust-toolchain.toml       # pinned Rust version
+├── rust-toolchain.toml       # rolling stable Rustup channel and components
 └── deny.toml                 # cargo-deny rules
 ```
 
@@ -164,10 +164,11 @@ DATABASE_URL = "revealui/prod/neon/postgres-url"
 STRIPE_SECRET_KEY = "revealui/prod/stripe/secret-key"
 
 # Inline-table form — optional `shape` constraint + optional `sensitive` marker.
-# sensitive = true requests Vercel type `sensitive` on CREATE: the plaintext is
-# never revealable in the Vercel UI/API after write. Use for credentials
+# sensitive = true requests Vercel Secret protection on CREATE. Production and
+# Preview values are unavailable to pulls; Development values may be returned.
+# Use for credentials
 # (Stripe keys, webhook secrets, signing/JWT secrets). Updates PATCH value-only
-# and never change an existing row's type (flip = delete + re-create).
+# and preserve classification. Type transitions remain separate tracked work.
 STRIPE_WEBHOOK_SECRET = { path = "revealui/prod/stripe/webhook-secret", shape = "stripe-webhook", sensitive = true }
 ```
 
@@ -175,12 +176,30 @@ The default behavior maps every `<vault_prefix>/<name>` to env var `NAME` for ea
 
 ### Sync semantics
 
-- `value-only PATCH` to Vercel API to preserve env-var type + target on update (`aa5ebf5`)
-- CREATE requests Vercel type `sensitive` when the manifest marks the var `sensitive = true` OR any existing remote row with the same key is `sensitive` (preserve-on-re-create; sensitivity is never silently downgraded — 0.3.0). A rejected type fails the apply loudly naming the requested type; there is no fallback to `encrypted`.
-- Type drift (manifest wants `sensitive`, remote row is not) is surfaced as a diff annotation; flipping an existing row requires delete + re-create.
-- `remote_map` filtered by `target` to avoid multi-environment ID collision (`b571920`)
-- Manifest schema enforced via `serde` deserialization
-- Dry-run prints unified diff between vault state and remote state
+- Default updates PATCH only the value. Rotation uses this same policy.
+- Per-key inline tables may opt into `manage_targets = true`. This replaces the selected row's target set with the project's `targets`; unspecified/bare-string entries remain value-only. The field is rejected if misspelled. For example, `{ path = "example/credential", sensitive = true, manage_targets = true }` explicitly declares target ownership without deploying any configuration by itself.
+- Selection retains immutable row IDs. Managed selection finds target drift even with unchanged values or no desired-target overlap. Targets compare as sets. Value comparisons join decrypted rows by ID and consistent metadata, never by name alone. A proven unchanged value is omitted from target-only PATCH; unreadable values remain value drift. Equality proof accepts an absent optional `decrypted` flag only on the successful explicit `decrypt=true` response; explicit false or malformed flags retain value drift even when returned bytes match. Apply retains the validated vault values in SecretString plan storage.
+- Every selected vault source must be readable before any selected project writes. Invalid shapes on keys with `manage_targets = true` also abort the whole plan. Ordinary value-only keys retain the explicit `drop-shape` policy: the diff reports the drop, apply records it in the audit, and other valid keys may proceed. Project/key filters and skip lists exclude keys before source validation.
+- Project `git_branch` selects the exact branch for updates as well as creates. Branch/custom-environment rows outside that scope are preserved. Duplicate candidates, missing IDs, protected integration/system rows and unsupported classification fail before mutation. Per-project and per-key CLI filters apply before ownership selection.
+- Managed decisions require a complete project inventory and a complete linked shared-variable inventory. Hidden production rows, remaining pagination, denied shared access, and linked shared keys fail closed. Custom environments and shared-variable management are not supported by this ownership declaration. Excluded rows can still expose the same key in their own scopes; this feature does not claim project-wide credential isolation.
+- CREATE requests `sensitive` when declared or when any same-key remote row is legacy `sensitive`/`secret` or has `visibility = "secret"`. PATCH omits classification, branch, custom environments, integration metadata and comments. A rejected request never retries with weaker classification.
+- Every CLI and rotation CREATE verifies the resulting immutable row, target/branch scope, preservation of prior same-key rows, and the requested protection floor. An encrypted request accepts encrypted or stronger sensitive storage; plaintext rows are rejected even if visibility metadata claims secrecy. Sensitive requests require `visibility = "secret"` or `type = "sensitive"`. The deprecated `type = "secret"` alone preserves conservative create intent but proves neither current Secret protection nor a supported create result; absent/config visibility fails verification. Rotation records success only after verification; a failed verification records failure and halts its remaining sync writes, while retaining the rotation executor's existing best-effort fan-out log contract.
+- Dry-run prints the target change and selected ID; JSON includes the before/after target sets. Apply plans and preflights every selected project before the first write, then rechecks each key before mutation. Duplicate immutable row IDs across selected plans and conflicting target ownership are rejected before mutation, including detectable project aliases. Disjoint branch entries remain supported. Updates verify preserved metadata and the resulting target set after PATCH; creates also verify the resulting row. Only successfully verified same-key metadata advances later plans for the same provider project, so our own branch writes are recognized while external changes to other keys remain stale-plan failures. A mismatch or provider error halts the remaining operations. Successful earlier rows remain applied and are recorded in the normal sync audit. Verified updates and creates include the row ID, before/after targets and preserved classification; receipt persistence failure also halts the apply. Review and rerun the normal planner to recover a partial apply; never delete/recreate rows as recovery.
+- Vercel does not document conditional PATCH / compare-and-swap for this endpoint. A remote writer can race the interval between metadata checks and PATCH. Verification detects observed changes but does not make the apply atomic or provide automatic rollback.
+- Decrypted-read 403 retains the existing assume-value-drift behavior. Other provider read errors surface. Only 429 responses retry, with the same reviewed request; provider error bodies are excluded from diagnostics because they may echo credentials.
+
+Provider contract checked against the [official OpenAPI](https://vercel.com/openapi.json), [project list](https://vercel.com/docs/rest-api/projects/retrieve-the-environment-variables-of-a-project-by-id-or-name), and [PATCH](https://vercel.com/docs/rest-api/projects/edit-an-environment-variable) on 2026-10-05. The maintained client uses v10 for project lists/creates, v9 for project-row PATCH, and v1 for linked shared-variable inventory. List targets accept either the documented string or array form. Current `visibility = "secret"` classification is preserved alongside legacy sensitivity.
+
+The [current Vercel CLI contract](https://github.com/vercel/vercel/blob/main/packages/cli/.agents/skills/cli-ux/references/command-contracts.md) distinguishes Secret classification from environment-specific read availability: Development Secret values may be returned. The [legacy-secret sunset](https://vercel.com/changelog/legacy-environment-variable-secrets-are-being-sunset) also excluded Development-linked legacy references from automatic migration. Historical references therefore retain stronger create intent without being accepted as proof of current Secret protection.
+
+### Existing sync lifecycle debt inventory
+
+| Tracking key | Prior location and behavior | Owning durable destination | Removal and validation evidence |
+| --- | --- | --- | --- |
+| `vercel-type-transition-lifecycle` | `crates/cli/src/commands/sync.rs` sensitivity comments and `type_drift_reason`; this spec's sensitivity guidance recommended manual delete/recreate | Existing Vercel provider/planner owner: reviewed classification-transition lifecycle with preserved scope/identity and interruption recovery | Manual recipe removed here; drift remains explicit and unsupported. Closing the debt requires provider-contract tests, sensitivity/no-downgrade checks, interruption/retry proof and reviewed remote metadata receipts. Target reconciliation does not close it. |
+| `vercel-orphan-removal-lifecycle` | `sync.rs` orphan output recommended manual removal | Existing Vercel planner/provider deletion owner: explicit reviewed removal intent, exact IDs/scopes, preflight and recovery | Manual-removal advice removed; orphan detection retains rows. Closing requires authorization boundaries, ambiguous-scope and partial-deletion tests, and remote removal receipts. |
+| `vercel-inventory-pagination` | Project/shared list contracts expose continuation metadata without documented request cursor parameters | Existing `VercelClient` list methods: establish supported continuation contract and traverse all pages without hidden rows or repeated cursors | Partial inventories currently fail closed. Closing requires official cursor semantics and multi-page/permission/race regressions; no manually truncated inventory can authorize an apply. |
+| `revvault-vercel-target-reconciliation` | `sync.rs` target intersection/key collapse, `vercel.rs` ignored target argument, `rotation/sync_hook.rs` first-name selection | Existing shared provider selector and explicit per-key target ownership implemented here | Synthetic regressions cover disjoint/unchanged-value drift, dry-run, filters, scope preservation, ambiguity, metadata races, 429/errors and partial-apply rerun. Source release and reviewed remote apply/metadata receipts remain required before production isolation can be claimed. |
 
 ---
 
@@ -206,7 +225,7 @@ Per-credential-type rotation runbook lives at [`revealui:docs/CREDENTIAL-ROTATIO
 - **Path validation:** directory traversal (`..`), null bytes, shell metacharacters rejected at the API layer in `core::path::validate`.
 - **No plaintext on disk** outside a tmpfs-backed restore directory zeroized on command exit.
 - **No logging of values** — debug logs reference paths, never decrypted bodies.
-- **CI:** SHA-pinned 37 actions (`60c2912`); Tauri cross-platform build workflow (`9e54c1d`); cargo-deny (`deny.toml`); rust-toolchain pinned (`rust-toolchain.toml`); `gitleaks` scanned.
+- **CI:** SHA-pinned 37 actions (`60c2912`); Tauri cross-platform build workflow (`9e54c1d`); cargo-deny (`deny.toml`); rolling stable Rustup channel (`rust-toolchain.toml`), with Nix toolchain reproducibility supplied by `flake.lock`; `gitleaks` scanned.
 
 ---
 
