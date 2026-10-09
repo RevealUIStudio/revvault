@@ -26,6 +26,9 @@ Thumbs.db
 .env.*
 !.envrc
 
+# Local client-name watchlist. CI uses the CLIENT_LEAK_PATTERNS org secret.
+.client-name-watchlist.local
+
 # Tauri
 crates/tauri-app/gen/
 CLAUDE.md
